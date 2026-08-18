@@ -9,26 +9,36 @@ import { createClient } from "@/lib/supabase/client"
 
 type Mode = "login" | "sign-up"
 
-// Genericize only the credential/existence signal; pass through actionable
-// errors (unconfirmed email, rate limit, weak password) and report the rest
-// as unexpected. This avoids account enumeration without hiding real problems.
 function authErrorMessage(error: unknown): string {
-  const { code, status } = (error ?? {}) as { code?: string; status?: number }
-  if (code === "email_not_confirmed") {
-    return "لطفاً ابتدا ایمیل خود را تأیید کنید — پیوند تأیید برای شما ارسال شده است."
+  const { code, status } = (error ?? {}) as {
+    code?: string
+    status?: number
   }
-  if (code === "over_request_rate_limit" || code === "over_email_send_rate_limit" || status === 429) {
+
+  if (code === "email_not_confirmed") {
+    return "لطفاً ابتدا ایمیل خود را تأیید کنید."
+  }
+
+  if (
+    code === "over_request_rate_limit" ||
+    code === "over_email_send_rate_limit" ||
+    status === 429
+  ) {
     return "تلاش‌های زیادی انجام شده است. لطفاً کمی صبر کنید و دوباره تلاش کنید."
   }
+
   if (code === "weak_password") {
     return "رمز عبور ضعیف است. حداقل ۶ نویسه انتخاب کنید."
   }
+
   if (code === "invalid_credentials") {
     return "ایمیل یا رمز عبور نادرست است."
   }
+
   if (code === "user_already_exists" || code === "email_exists") {
     return "حسابی با این ایمیل از قبل وجود دارد."
   }
+
   return "مشکلی پیش آمد. لطفاً دوباره تلاش کنید."
 }
 
@@ -38,6 +48,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
+
   const router = useRouter()
   const searchParams = useSearchParams()
   const next = searchParams.get("next") ?? "/dashboard"
@@ -46,15 +57,22 @@ export function AuthForm({ mode }: { mode: Mode }) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+
     const supabase = createClient()
+
     setIsLoading(true)
     setError(null)
     setNotice(null)
 
     try {
       if (isLogin) {
-        const { error } = await supabase.auth.signInWithPassword({ email, password })
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        })
+
         if (error) throw error
+
         router.push(next)
         router.refresh()
       } else {
@@ -63,11 +81,16 @@ export function AuthForm({ mode }: { mode: Mode }) {
           password,
           options: {
             emailRedirectTo:
-              process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL ?? `${window.location.origin}/auth/callback`,
+              process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL ??
+              `${window.location.origin}/auth/callback`,
           },
         })
+
         if (error) throw error
-        setNotice("حساب شما ساخته شد. برای فعال‌سازی، پیوند تأیید ارسال‌شده به ایمیل خود را باز کنید.")
+
+        setNotice(
+          "حساب شما ساخته شد. برای فعال‌سازی، پیوند تأیید ارسال‌شده به ایمیل خود را باز کنید."
+        )
       }
     } catch (error) {
       console.error("[v0] auth error:", error)
@@ -83,6 +106,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
         <label htmlFor="email" className="text-sm font-medium">
           ایمیل
         </label>
+
         <input
           id="email"
           type="email"
@@ -101,6 +125,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
         <label htmlFor="password" className="text-sm font-medium">
           رمز عبور
         </label>
+
         <input
           id="password"
           type="password"
@@ -115,8 +140,22 @@ export function AuthForm({ mode }: { mode: Mode }) {
         />
       </div>
 
+      {isLogin ? (
+        <div className="text-right">
+          <Link
+            href="/auth/forgot-password"
+            className="text-sm font-medium text-accent underline-offset-4 hover:underline"
+          >
+            رمز عبور را فراموش کرده‌اید؟
+          </Link>
+        </div>
+      ) : null}
+
       {error ? (
-        <p role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+        <p
+          role="alert"
+          className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200"
+        >
           {error}
         </p>
       ) : null}
@@ -132,12 +171,21 @@ export function AuthForm({ mode }: { mode: Mode }) {
         disabled={isLoading}
         className="mt-1 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-60"
       >
-        {isLoading ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+        {isLoading ? (
+          <Loader2
+            className="h-4 w-4 animate-spin"
+            aria-hidden="true"
+          />
+        ) : null}
+
         {isLogin ? "ورود به حساب" : "ساخت حساب"}
       </button>
 
       <p className="text-center text-sm text-muted-foreground">
-        {isLogin ? "حساب کاربری ندارید؟ " : "قبلاً ثبت‌نام کرده‌اید؟ "}
+        {isLogin
+          ? "حساب کاربری ندارید؟ "
+          : "قبلاً ثبت‌نام کرده‌اید؟ "}
+
         <Link
           href={isLogin ? "/auth/sign-up" : "/auth/login"}
           className="font-medium text-accent underline-offset-4 hover:underline"
