@@ -1,3 +1,4 @@
+```tsx
 "use client"
 
 import { useState } from "react"
@@ -18,9 +19,13 @@ export default function ForgotPasswordPage() {
 
     const supabase = createClient()
 
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/auth/update-password`,
-    })
+    const redirectTo =
+      `${window.location.origin}/auth/update-password`
+
+    const { error } =
+      await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo,
+      })
 
     setLoading(false)
 
@@ -73,7 +78,9 @@ export default function ForgotPasswordPage() {
               disabled={loading}
               className="w-full rounded-lg bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
             >
-              {loading ? "در حال ارسال..." : "ارسال لینک بازیابی"}
+              {loading
+                ? "در حال ارسال..."
+                : "ارسال لینک بازیابی"}
             </button>
           </form>
         </div>
@@ -81,3 +88,4 @@ export default function ForgotPasswordPage() {
     </main>
   )
 }
+```
