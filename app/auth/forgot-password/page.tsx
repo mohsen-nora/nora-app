@@ -1,4 +1,4 @@
-```tsx
+
 "use client"
 
 import { useState } from "react"
@@ -19,8 +19,7 @@ export default function ForgotPasswordPage() {
 
     const supabase = createClient()
 
-    const redirectTo =
-      `${window.location.origin}/auth/update-password`
+    const redirectTo = window.location.origin + "/auth/update-password"
 
     const { error } =
       await supabase.auth.resetPasswordForEmail(email, {
@@ -88,4 +87,3 @@ export default function ForgotPasswordPage() {
     </main>
   )
 }
-```
