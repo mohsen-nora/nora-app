@@ -1,6 +1,6 @@
 import type React from "react"
 import Link from "next/link"
-import { LayoutDashboard, LogOut, ShieldCheck } from "lucide-react"
+import { LayoutDashboard, LogOut, MessageSquare, ShieldCheck } from "lucide-react"
 import { NoraMark } from "@/components/brand"
 import { roleLabel } from "@/lib/format"
 
@@ -15,7 +15,7 @@ export function AppShell({
   email?: string | null
   role?: string | null
   isOwner: boolean
-  active: "dashboard" | "owner"
+  active: "dashboard" | "chat" | "owner"
 }) {
   return (
     <div className="nora-ambient min-h-svh">
@@ -31,7 +31,10 @@ export function AppShell({
               <LayoutDashboard className="h-4 w-4" aria-hidden="true" />
               <span className="hidden sm:inline">داشبورد</span>
             </NavLink>
-
+            <NavLink href="/chat" active={active === "chat"}>
+              <MessageSquare className="h-4 w-4" aria-hidden="true" />
+              <span className="hidden sm:inline">گفتگو</span>
+            </NavLink>
             {isOwner ? (
               <NavLink href="/owner" active={active === "owner"}>
                 <ShieldCheck className="h-4 w-4" aria-hidden="true" />
