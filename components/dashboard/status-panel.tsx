@@ -15,7 +15,9 @@ export function StatusPanel({
   memoryCount: number
 }) {
   const primary = instances[0]
-  const primaryStatus = statusVisual(primary?.status)
+  // The live database schema uses is_active; older UI data used status.
+  const rawStatus = primary?.status ?? (primary?.is_active === true ? "online" : primary?.is_active === false ? "offline" : null)
+  const primaryStatus = statusVisual(rawStatus)
 
   return (
     <section aria-labelledby="status-heading" className="flex flex-col gap-4">
