@@ -1,6 +1,7 @@
 "use client"
 
-import { FormEvent, useEffect, useRef, useState } from "react"
+import type { FormEvent } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Loader2, Send } from "lucide-react"
 import { Card } from "@/components/ui"
 import { cn } from "@/lib/utils"
@@ -20,20 +21,33 @@ export function ChatView() {
     event.preventDefault()
     const content = input.trim()
     if (!content || busy) return
+
     setInput("")
     setError(null)
     const next = [...messages, { role: "user" as const, content }]
     setMessages(next)
     setBusy(true)
+
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", accept: "application/json" },
+        cache: "no-store",
         body: JSON.stringify({ messages: next }),
       })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error || "پاسخ نورا دریافت نشد")
-      setMessages((current) => [...current, { role: "assistant", content: data.content }])
+
+      const raw = await response.text()
+      let data: { content?: string; error?: string } = {}
+      try {
+        data = raw ? JSON.parse(raw) : {}
+      } catch {
+        throw new Error(`خطای سرور نورا (HTTP ${response.status})`)
+      }
+
+      if (!response.ok) throw new Error(data.error || `پاسخ نورا دریافت نشد (HTTP ${response.status})`)
+      if (typeof data.content !== "string" || !data.content.trim()) throw new Error("پاسخ نورا خالی بود.")
+
+      setMessages((current) => [...current, { role: "assistant", content: data.content!.trim() }])
     } catch (err) {
       setError(err instanceof Error ? err.message : "خطای ناشناخته")
     } finally {
@@ -62,7 +76,7 @@ export function ChatView() {
       </div>
       {error ? <p className="border-t border-border px-4 py-2 text-sm text-rose-400">{error}</p> : null}
       <form onSubmit={send} className="flex gap-2 border-t border-border p-3">
-        <input value={input} onChange={(e) => setInput(e.target.value)} disabled={busy} placeholder="پیام خود را بنویسید..." className="min-w-0 flex-1 rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" />
+        <input value={input} onChange={(e) => setInput(e.target.value)} disabled={busy} placeholder="پیام خود را برای نورا بنویسید..." className="min-w-0 flex-1 rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" />
         <button type="submit" disabled={busy || !input.trim()} aria-label="ارسال" className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground disabled:opacity-50">
           <Send className="h-4 w-4" />
         </button>
