@@ -7,6 +7,7 @@ export const dynamic = "force-dynamic"
 export async function POST(request: Request) {
   const ctx = await getSessionContext()
   if (!ctx) return NextResponse.json({ error: "برای گفتگو باید وارد حساب شوید." }, { status: 401 })
+  if (!ctx.profile?.nora_id) return NextResponse.json({ error: "حساب شما به نمونه نورا متصل نیست." }, { status: 403 })
 
   const body = await request.json().catch(() => null)
   const messages = Array.isArray(body?.messages) ? body.messages : []
@@ -26,7 +27,7 @@ export async function POST(request: Request) {
   const { data: instance, error: instanceError } = await supabase
     .from("nora_instances")
     .select("id,name,system_prompt,is_active")
-    .eq("id", ctx.noraId)
+    .eq("id", ctx.profile.nora_id)
     .maybeSingle()
   if (instanceError || !instance) return NextResponse.json({ error: "نمونه نورا پیدا نشد." }, { status: 404 })
   if (instance.is_active === false) return NextResponse.json({ error: "نورا در حال حاضر غیرفعال است." }, { status: 503 })
