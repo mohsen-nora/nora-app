@@ -14,6 +14,10 @@ export interface NoraInstance {
   is_active?: boolean | null
   created_at?: string | null
   updated_at?: string | null
+  /** Legacy/UI aliases retained for compatibility with existing views. */
+  status?: NoraStatus | null
+  version?: string | null
+  last_active_at?: string | null
 }
 
 export interface NoraUser {
@@ -24,6 +28,9 @@ export interface NoraUser {
   role: NoraRole
   profile?: Record<string, unknown> | null
   created_at?: string | null
+  /** Legacy/UI aliases retained for compatibility with existing views. */
+  display_name?: string | null
+  full_name?: string | null
 }
 
 export interface NoraMemory {
@@ -36,6 +43,11 @@ export interface NoraMemory {
   metadata?: Record<string, unknown> | null
   created_at?: string | null
   updated_at?: string | null
+  /** Legacy/UI aliases retained for compatibility with existing views. */
+  title?: string | null
+  key?: string | null
+  category?: string | null
+  value?: string | null
 }
 
 export interface NoraConversation {
@@ -46,6 +58,8 @@ export interface NoraConversation {
   metadata?: Record<string, unknown> | null
   created_at?: string | null
   updated_at?: string | null
+  /** Derived/UI field; may be populated by a query or left undefined. */
+  last_message_at?: string | null
 }
 
 export type MessageRole = "user" | "assistant" | "system" | "nora" | (string & {})
@@ -57,6 +71,9 @@ export interface NoraMessage {
   content: string
   metadata?: Record<string, unknown> | null
   created_at?: string | null
+  /** Legacy/UI aliases retained for compatibility with existing views. */
+  body?: string | null
+  sender?: string | null
 }
 
 export interface NoraCommand {
@@ -65,6 +82,11 @@ export interface NoraCommand {
   command: string
   payload?: Record<string, unknown> | null
   created_at?: string | null
+  /** Legacy/UI aliases retained for compatibility with existing views. */
+  name?: string | null
+  description?: string | null
+  enabled?: boolean | null
+  is_enabled?: boolean | null
 }
 
 export interface NoraActivityLog {
@@ -74,4 +96,9 @@ export interface NoraActivityLog {
   action: string
   metadata?: Record<string, unknown> | null
   created_at?: string | null
+  /** Legacy/UI aliases retained for compatibility with existing views. */
+  event?: string | null
+  type?: string | null
+  description?: string | null
+  detail?: string | null
 }
