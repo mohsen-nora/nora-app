@@ -32,10 +32,12 @@ export async function POST(request: Request) {
   if (instanceError || !instance) return NextResponse.json({ error: "نمونه نورا پیدا نشد." }, { status: 404 })
   if (instance.is_active === false) return NextResponse.json({ error: "نورا در حال حاضر غیرفعال است." }, { status: 503 })
 
+  // Keep the existing Vercel variable name so only its value needs to change.
   const apiKey = process.env.OPENAI_API_KEY || process.env.AI_GATEWAY_API_KEY
   if (!apiKey) return NextResponse.json({ error: "کلید سرویس هوش مصنوعی روی سرور تنظیم نشده است." }, { status: 503 })
 
-  const baseUrl = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"
+  // Nora now defaults to the Iran-accessible OpenAI-compatible 1xAi gateway.
+  const baseUrl = process.env.OPENAI_BASE_URL || "https://1xai.ir/v1"
   const model = process.env.OPENAI_MODEL || "gpt-5-mini"
   const systemPrompt = instance.system_prompt || "You are Nora, a personal AI assistant."
 
