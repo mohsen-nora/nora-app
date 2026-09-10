@@ -65,14 +65,14 @@ export function AuthForm({ mode }: { mode: Mode }) {
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
         <label htmlFor="email" className="text-sm font-medium">ایمیل</label>
-        <input id="email" type="email" inputMode="email" dir="ltr" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" className="w-full rounded-xl border border-border bg-background/60 px-3.5 py-2.5 text-sm text-foreground outline-none transition placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/40" />
+        <input id="email" name="email" type="email" inputMode="email" dir="ltr" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" className="w-full rounded-xl border border-border bg-background/60 px-3.5 py-2.5 text-sm text-foreground outline-none transition placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/40" />
       </div>
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-3">
           <label htmlFor="password" className="text-sm font-medium">رمز عبور</label>
           {isLogin ? <Link href="/auth/forgot-password" className="text-xs font-medium text-accent underline-offset-4 hover:underline">فراموشی رمز عبور</Link> : null}
         </div>
-        <input id="password" type="password" dir="ltr" autoComplete={isLogin ? "current-password" : "new-password"} required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" className="w-full rounded-xl border border-border bg-background/60 px-3.5 py-2.5 text-sm text-foreground outline-none transition placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/40" />
+        <input id="password" name="password" type="password" dir="ltr" autoComplete={isLogin ? "current-password" : "new-password"} required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" className="w-full rounded-xl border border-border bg-background/60 px-3.5 py-2.5 text-sm text-foreground outline-none transition placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/40" />
       </div>
       {error ? <p role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p> : null}
       {notice ? <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">{notice}</p> : null}
