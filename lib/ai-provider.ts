@@ -7,7 +7,7 @@ type Provider = {
   model: string
 }
 
-function getProviders(): Provider[] {
+export function getAiProvidersForStreaming(): Provider[] {
   const providers: Provider[] = []
   const primaryKey = process.env.AI_PRIMARY_API_KEY || process.env.OPENAI_API_KEY || process.env.AI_GATEWAY_API_KEY
   const primaryBaseUrl = process.env.AI_PRIMARY_BASE_URL || process.env.OPENAI_BASE_URL || "https://1xai.ir/v1"
@@ -22,7 +22,7 @@ function getProviders(): Provider[] {
 }
 
 export async function generateAiResponse(messages: ChatMessage[]) {
-  const providers = getProviders()
+  const providers = getAiProvidersForStreaming()
   if (!providers.length) throw new Error("AI_PROVIDER_NOT_CONFIGURED")
   let lastError: unknown = null
 
@@ -32,6 +32,7 @@ export async function generateAiResponse(messages: ChatMessage[]) {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}` },
         body: JSON.stringify({ model: provider.model, messages }),
+        cache: "no-store",
       })
       const data = await response.json().catch(() => null)
       if (!response.ok) {
