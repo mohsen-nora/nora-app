@@ -63,7 +63,7 @@ export function normalizeRelationship(value: unknown): NoraRelationshipState {
 
 export function normalizeUserProfile(value: unknown): NoraUserProfile {
   const input = (value && typeof value === "object" ? value : {}) as Record<string, unknown>
-  const list = (key: keyof NoraUserProfile) => Array.isArray(input[key]) ? input[key].filter((v): v is string => typeof v === "string" && v.trim()).slice(0, 30) : []
+  const list = (key: keyof NoraUserProfile) => Array.isArray(input[key]) ? input[key].filter((v): v is string => typeof v === "string" && Boolean(v.trim())).slice(0, 30) : []
   const communication = ["short", "detailed", "mixed"].includes(String(input.communication_style)) ? input.communication_style as NoraUserProfile["communication_style"] : undefined
   const tone = ["warm", "direct", "formal", "casual", "mixed"].includes(String(input.tone_preference)) ? input.tone_preference as NoraUserProfile["tone_preference"] : undefined
   const decision = ["fast", "analytical", "balanced"].includes(String(input.decision_style)) ? input.decision_style as NoraUserProfile["decision_style"] : undefined
