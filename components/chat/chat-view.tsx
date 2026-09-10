@@ -2,24 +2,65 @@
 
 import type { FormEvent } from "react"
 import { useEffect, useRef, useState } from "react"
-import { Loader2, Send } from "lucide-react"
+import { Loader2, Mic, MicOff, Send, Volume2, VolumeX } from "lucide-react"
 import { Card } from "@/components/ui"
 import { cn } from "@/lib/utils"
 
 type Message = { role: "user" | "assistant"; content: string }
+type SpeechRecognitionEventLike = { results: { [index: number]: { [index: number]: { transcript: string } } } }
+type SpeechRecognitionLike = {
+  lang: string
+  continuous: boolean
+  interimResults: boolean
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null
+  onerror: (() => void) | null
+  onend: (() => void) | null
+  start: () => void
+  stop: () => void
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor
+    webkitSpeechRecognition?: SpeechRecognitionConstructor
+  }
+}
+
+function pickPersianVoice() {
+  if (typeof window === "undefined" || !window.speechSynthesis) return null
+  const voices = window.speechSynthesis.getVoices()
+  const fa = voices.filter((voice) => voice.lang.toLowerCase().startsWith("fa"))
+  return fa.find((voice) => /female|زن|google.*persian/i.test(voice.name)) || fa[0] || null
+}
 
 export function ChatView() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [busy, setBusy] = useState(false)
+  const [listening, setListening] = useState(false)
+  const [voiceEnabled, setVoiceEnabled] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
 
   useEffect(() => endRef.current?.scrollIntoView({ behavior: "smooth" }), [messages, busy])
 
-  async function send(event: FormEvent) {
-    event.preventDefault()
-    const content = input.trim()
+  function speak(text: string) {
+    if (!voiceEnabled || typeof window === "undefined" || !window.speechSynthesis) return
+    window.speechSynthesis.cancel()
+    const utterance = new SpeechSynthesisUtterance(text)
+    utterance.lang = "fa-IR"
+    utterance.rate = 0.95
+    utterance.pitch = 1.05
+    const voice = pickPersianVoice()
+    if (voice) utterance.voice = voice
+    window.speechSynthesis.speak(utterance)
+  }
+
+  async function sendText(contentOverride?: string) {
+    const content = (contentOverride ?? input).trim()
     if (!content || busy) return
 
     setInput("")
@@ -47,7 +88,9 @@ export function ChatView() {
       if (!response.ok) throw new Error(data.error || `پاسخ نورا دریافت نشد (HTTP ${response.status})`)
       if (typeof data.content !== "string" || !data.content.trim()) throw new Error("پاسخ نورا خالی بود.")
 
-      setMessages((current) => [...current, { role: "assistant", content: data.content!.trim() }])
+      const answer = data.content.trim()
+      setMessages((current) => [...current, { role: "assistant", content: answer }])
+      speak(answer)
     } catch (err) {
       setError(err instanceof Error ? err.message : "خطای ناشناخته")
     } finally {
@@ -55,12 +98,44 @@ export function ChatView() {
     }
   }
 
+  function toggleListening() {
+    if (listening) {
+      recognitionRef.current?.stop()
+      setListening(false)
+      return
+    }
+
+    const Recognition = typeof window !== "undefined" ? (window.SpeechRecognition || window.webkitSpeechRecognition) : undefined
+    if (!Recognition) {
+      setError("تشخیص صدای فارسی در این مرورگر در دسترس نیست. Chrome روی اندروید را امتحان کنید.")
+      return
+    }
+
+    const recognition = new Recognition()
+    recognition.lang = "fa-IR"
+    recognition.continuous = false
+    recognition.interimResults = false
+    recognition.onresult = (event) => {
+      const transcript = event.results[0]?.[0]?.transcript?.trim()
+      if (transcript) void sendText(transcript)
+    }
+    recognition.onerror = () => {
+      setListening(false)
+      setError("دریافت صدا ناموفق بود. اجازه میکروفون را بررسی کنید.")
+    }
+    recognition.onend = () => setListening(false)
+    recognitionRef.current = recognition
+    setError(null)
+    setListening(true)
+    recognition.start()
+  }
+
   return (
     <Card className="flex min-h-[32rem] flex-col overflow-hidden">
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
         {messages.length === 0 ? (
           <div className="flex h-full min-h-[24rem] items-center justify-center text-center text-sm text-muted-foreground">
-            پیام خود را برای نورا بنویسید.
+            با نورا حرف بزنید یا پیام خود را بنویسید.
           </div>
         ) : (
           messages.map((message, index) => (
@@ -75,8 +150,14 @@ export function ChatView() {
         <div ref={endRef} />
       </div>
       {error ? <p className="border-t border-border px-4 py-2 text-sm text-rose-400">{error}</p> : null}
-      <form onSubmit={send} className="flex gap-2 border-t border-border p-3">
-        <input value={input} onChange={(e) => setInput(e.target.value)} disabled={busy} placeholder="پیام خود را برای نورا بنویسید..." className="min-w-0 flex-1 rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" />
+      <form onSubmit={(event: FormEvent) => { event.preventDefault(); void sendText() }} className="flex gap-2 border-t border-border p-3">
+        <button type="button" onClick={toggleListening} disabled={busy} aria-label={listening ? "توقف ضبط صدا" : "صحبت با نورا"} title={listening ? "توقف ضبط صدا" : "صحبت با نورا"} className={cn("inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ring-1 ring-border", listening ? "bg-primary text-primary-foreground" : "bg-background")}>
+          {listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+        </button>
+        <input value={input} onChange={(e) => setInput(e.target.value)} disabled={busy || listening} placeholder={listening ? "نورا گوش می‌دهد..." : "با نورا صحبت کنید یا پیام بنویسید..."} className="min-w-0 flex-1 rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" />
+        <button type="button" onClick={() => { setVoiceEnabled((value) => { const next = !value; if (!next && typeof window !== "undefined") window.speechSynthesis?.cancel(); return next }) }} aria-label={voiceEnabled ? "خاموش کردن صدای نورا" : "روشن کردن صدای نورا"} title={voiceEnabled ? "خاموش کردن صدای نورا" : "روشن کردن صدای نورا"} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-background ring-1 ring-border">
+          {voiceEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+        </button>
         <button type="submit" disabled={busy || !input.trim()} aria-label="ارسال" className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground disabled:opacity-50">
           <Send className="h-4 w-4" />
         </button>
