@@ -7,6 +7,7 @@ import { AppShell } from "@/components/app-shell"
 import { ActivitySection, CommandsSection, InstancesSection, UsersSection } from "@/components/owner/sections"
 import { NoraControl } from "@/components/owner/nora-control"
 import { MemoryManager } from "@/components/owner/memory-manager"
+import { NoraBrain } from "@/components/owner/nora-brain"
 
 export const dynamic = "force-dynamic"
 
@@ -38,6 +39,7 @@ export default async function OwnerPage() {
         <div className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/15 text-accent"><ShieldCheck className="h-5 w-5" aria-hidden="true" /></span><div><h1 className="text-2xl font-bold tracking-tight text-balance">پنل مالک</h1><p className="mt-0.5 text-sm text-muted-foreground text-pretty">مدیریت مستقیم نورا، کاربران، حافظه و فعالیت‌ها.</p></div></div>
         <div className="grid gap-4 lg:grid-cols-2">
           <NoraControl initial={ownedInstance} />
+          <NoraBrain />
           <MemoryManager />
           <UsersSection users={users.data} error={users.error} />
           <InstancesSection instances={instances.data} error={instances.error} />
