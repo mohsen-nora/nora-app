@@ -5,17 +5,14 @@ import { getSessionContext, requireOwner } from "@/lib/authz"
 import { getActivityLogs, getAllUsers, getCommands, getInstances } from "@/lib/nora"
 import { AppShell } from "@/components/app-shell"
 import { ActivitySection, CommandsSection, InstancesSection, UsersSection } from "@/components/owner/sections"
+import { NoraControl } from "@/components/owner/nora-control"
 
 export const dynamic = "force-dynamic"
 
 export default async function OwnerPage() {
-  // First ensure there is a session at all (middleware also guards this).
   const ctx = await getSessionContext()
   if (!ctx) redirect("/auth/login?next=/owner")
 
-  // Server-side authorization gate. This is enforced here AND by RLS on the
-  // underlying tables — never by hiding UI. A non-owner who navigates directly
-  // to /owner sees the unauthorized view and no privileged data is fetched.
   const owner = await requireOwner()
 
   if (!owner) {
@@ -46,6 +43,7 @@ export default async function OwnerPage() {
     getCommands(),
     getActivityLogs(),
   ])
+  const ownedInstance = instances.data.find((instance) => instance.id === owner.profile?.nora_id) || instances.data[0] || null
 
   return (
     <AppShell email={owner.authUser.email} role={owner.profile?.role} isOwner active="owner">
@@ -57,12 +55,13 @@ export default async function OwnerPage() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-balance">پنل مالک</h1>
             <p className="mt-0.5 text-sm text-muted-foreground text-pretty">
-              مدیریت کاربران، نمونه‌ها، دستورها و رصد فعالیت‌های نورا.
+              مدیریت مستقیم نورا، کاربران، دستورها و فعالیت‌ها.
             </p>
           </div>
         </div>
 
         <div className="grid gap-4 lg:grid-cols-2">
+          <NoraControl initial={ownedInstance} />
           <UsersSection users={users.data} error={users.error} />
           <InstancesSection instances={instances.data} error={instances.error} />
           <CommandsSection commands={commands.data} error={commands.error} />
