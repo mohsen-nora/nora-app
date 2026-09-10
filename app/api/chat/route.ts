@@ -2,8 +2,23 @@ import { NextResponse } from "next/server"
 import { getSessionContext } from "@/lib/authz"
 import { createClient } from "@/lib/supabase/server"
 import { streamAiResponse } from "@/lib/ai-provider"
+import { advanceRelationship, buildNoraSystemPrompt, normalizeRelationship, extractMemories } from "@/lib/nora-core"
+import type { NoraMemory } from "@/lib/types"
 
 export const dynamic = "force-dynamic"
+
+async function getNoraContext(supabase: Awaited<ReturnType<typeof createClient>>, noraId: string, userId: string) {
+  const { data: memories } = await supabase
+    .from("nora_memory")
+    .select("*")
+    .eq("nora_id", noraId)
+    .eq("user_id", userId)
+    .order("importance", { ascending: false })
+    .order("updated_at", { ascending: false })
+    .limit(30)
+
+  return (memories || []) as NoraMemory[]
+}
 
 export async function GET() {
   const ctx = await getSessionContext()
@@ -59,7 +74,7 @@ export async function POST(request: Request) {
   const supabase = await createClient()
   const { data: instance, error: instanceError } = await supabase
     .from("nora_instances")
-    .select("id,system_prompt,is_active")
+    .select("id,name,system_prompt,personality,is_active")
     .eq("id", ctx.profile.nora_id)
     .maybeSingle()
   if (instanceError || !instance) return NextResponse.json({ error: "نمونه نورا پیدا نشد." }, { status: 404 })
@@ -67,7 +82,7 @@ export async function POST(request: Request) {
 
   const { data: existing } = await supabase
     .from("nora_conversations")
-    .select("id,title")
+    .select("id,title,metadata")
     .eq("nora_id", instance.id)
     .eq("user_id", ctx.authUser.id)
     .order("updated_at", { ascending: false })
@@ -76,11 +91,13 @@ export async function POST(request: Request) {
 
   let conversationId: string
   let title: string
+  let conversationMetadata: Record<string, unknown> = {}
   let history: Array<{ role: "user" | "assistant"; content: string }> = []
 
   if (existing?.id) {
     conversationId = existing.id
     title = existing.title || userContent.slice(0, 80)
+    conversationMetadata = (existing.metadata && typeof existing.metadata === "object" ? existing.metadata : {}) as Record<string, unknown>
     const { data: stored, error } = await supabase
       .from("nora_messages")
       .select("role,content")
@@ -95,10 +112,11 @@ export async function POST(request: Request) {
     const { data: created, error } = await supabase
       .from("nora_conversations")
       .insert({ nora_id: instance.id, user_id: ctx.authUser.id, title, metadata: {} })
-      .select("id")
+      .select("id,metadata")
       .single()
     if (error || !created) return NextResponse.json({ error: "ساخت گفتگو ناموفق بود." }, { status: 500 })
     conversationId = created.id
+    conversationMetadata = {}
   }
 
   const userMessage = { role: "user" as const, content: userContent }
@@ -109,7 +127,16 @@ export async function POST(request: Request) {
     history.push(userMessage)
   }
 
-  const aiMessages = [{ role: "system" as const, content: instance.system_prompt || "You are Nora, a personal AI assistant." }, ...history.slice(-20)]
+  const memories = await getNoraContext(supabase, instance.id, ctx.authUser.id)
+  const relationship = normalizeRelationship(conversationMetadata.relationship)
+  const systemPrompt = buildNoraSystemPrompt({
+    name: instance.name,
+    systemPrompt: instance.system_prompt,
+    personality: instance.personality,
+    memories,
+    relationship,
+  })
+  const aiMessages = [{ role: "system" as const, content: systemPrompt }, ...history.slice(-20)]
   const encoder = new TextEncoder()
   let fullContent = ""
   let providerInfo = { model: "", provider: "" }
@@ -122,8 +149,31 @@ export async function POST(request: Request) {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "delta", content: chunk })}\n\n`))
         })
         providerInfo = { model: result.model, provider: result.provider }
+        const nextRelationship = advanceRelationship(relationship)
+        const nextMetadata = { ...conversationMetadata, relationship: nextRelationship }
+
         await supabase.from("nora_messages").insert({ conversation_id: conversationId, role: "assistant", content: fullContent.trim(), metadata: providerInfo })
-        await supabase.from("nora_conversations").update({ title, updated_at: new Date().toISOString() }).eq("id", conversationId)
+        await supabase.from("nora_conversations").update({ title, updated_at: new Date().toISOString(), metadata: nextMetadata }).eq("id", conversationId)
+
+        // Learn only durable, user-provided facts; never store the whole conversation as memory.
+        const extracted = await extractMemories(userContent, fullContent.trim())
+        for (const memory of extracted) {
+          const content = String(memory.content).trim().slice(0, 1000)
+          const memoryType = String(memory.type || "fact").slice(0, 50)
+          const importance = Math.max(1, Math.min(10, Number(memory.importance) || 5))
+          const duplicate = memories.some((m) => m.content.trim().toLowerCase() === content.toLowerCase())
+          if (!duplicate && content) {
+            await supabase.from("nora_memory").insert({
+              nora_id: instance.id,
+              user_id: ctx.authUser.id,
+              memory_type: memoryType,
+              content,
+              importance,
+              metadata: { source: "conversation", conversation_id: conversationId },
+            })
+          }
+        }
+
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", conversationId })}\n\n`))
         controller.close()
       } catch (error) {
