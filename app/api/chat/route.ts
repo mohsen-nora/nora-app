@@ -139,6 +139,9 @@ export async function POST(request: Request) {
         await supabase.from("nora_messages").insert({ conversation_id: conversationId, role: "assistant", content: fullContent.trim(), metadata: providerInfo })
         await supabase.from("nora_conversations").update({ title, updated_at: new Date().toISOString(), metadata: nextMetadata }).eq("id", conversationId)
 
+        // پاسخ اصلی همین‌جا تمام شده است؛ کلاینت را منتظر عملیات حافظه و پروفایل نگذار.
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", conversationId })}\n\n`))
+
         if (memoryEnabled && memoryAutoSave) {
           const extracted = await extractMemories(userContent, fullContent.trim())
           for (const memory of extracted) {
@@ -160,7 +163,6 @@ export async function POST(request: Request) {
           }
         }
 
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", conversationId })}\n\n`))
         controller.close()
       } catch (error) {
         console.error("Nora AI streaming failed", error)
