@@ -2,7 +2,7 @@
 
 import type React from "react"
 import { useState } from "react"
-import { useRouter, useSearchParams } from "next/navigation"
+import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { Loader2 } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
@@ -19,15 +19,13 @@ function authErrorMessage(error: unknown): string {
   return "مشکلی پیش آمد. لطفاً دوباره تلاش کنید."
 }
 
-export function AuthForm({ mode }: { mode: Mode }) {
+export function AuthForm({ mode, nextPath = "/dashboard" }: { mode: Mode; nextPath?: string }) {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const router = useRouter()
-  const searchParams = useSearchParams()
-  const next = searchParams.get("next") ?? "/dashboard"
   const isLogin = mode === "login"
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -40,7 +38,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
       if (isLogin) {
         const { error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) throw error
-        router.push(next)
+        router.push(nextPath)
         router.refresh()
       } else {
         const { error } = await supabase.auth.signUp({
