@@ -27,68 +27,86 @@ export async function streamAiResponse(messages: ChatMessage[], onChunk: (text: 
   let lastError: unknown = null
 
   for (const provider of providers) {
-    try {
-      const response = await fetch(`${provider.baseUrl.replace(/\/$/, "")}/chat/completions`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}`, accept: "text/event-stream" },
-        body: JSON.stringify({
-          model: provider.model,
-          messages,
-          stream: true,
-          max_tokens: 250,
-        }),
-        cache: "no-store",
-      })
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      let emitted = false
+      try {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 35000)
+        let response: Response
+        try {
+          response = await fetch(`${provider.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}`, accept: "text/event-stream" },
+            body: JSON.stringify({
+              model: provider.model,
+              messages,
+              stream: true,
+              max_tokens: 250,
+            }),
+            cache: "no-store",
+            signal: controller.signal,
+          })
+        } finally {
+          clearTimeout(timeout)
+        }
 
-      if (!response.ok || !response.body) {
-        const data = await response.json().catch(() => null)
-        lastError = new Error(`${provider.name} provider returned ${response.status}`)
-        console.error("Nora AI streaming provider error", provider.name, response.status, data)
-        continue
-      }
+        if (!response.ok || !response.body) {
+          const data = await response.json().catch(() => null)
+          lastError = new Error(`${provider.name} provider returned ${response.status}`)
+          console.error("Nora AI streaming provider error", provider.name, response.status, data)
+          if (attempt < 2) continue
+          break
+        }
 
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ""
-      let fullContent = ""
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ""
+        let fullContent = ""
 
-      const consume = (text: string) => {
-        buffer += text
-        const lines = buffer.split("\n")
-        buffer = lines.pop() || ""
-        for (const rawLine of lines) {
-          const line = rawLine.trim()
-          if (!line.startsWith("data:")) continue
-          const payload = line.slice(5).trim()
-          if (payload === "[DONE]") continue
-          try {
-            const data = JSON.parse(payload)
-            const delta = data?.choices?.[0]?.delta?.content
-            if (typeof delta === "string" && delta) {
-              fullContent += delta
-              onChunk(delta)
+        const consume = (text: string) => {
+          buffer += text
+          const lines = buffer.split("\n")
+          buffer = lines.pop() || ""
+          for (const rawLine of lines) {
+            const line = rawLine.trim()
+            if (!line.startsWith("data:")) continue
+            const payload = line.slice(5).trim()
+            if (payload === "[DONE]") continue
+            try {
+              const data = JSON.parse(payload)
+              const delta = data?.choices?.[0]?.delta?.content
+              if (typeof delta === "string" && delta) {
+                emitted = true
+                fullContent += delta
+                onChunk(delta)
+              }
+            } catch {
+              // Ignore incomplete/non-JSON SSE lines.
             }
-          } catch {
-            // Ignore incomplete/non-JSON SSE lines.
           }
         }
-      }
 
-      while (true) {
-        const { value, done } = await reader.read()
-        if (done) break
-        consume(decoder.decode(value, { stream: true }))
-      }
-      consume(decoder.decode())
+        while (true) {
+          const { value, done } = await reader.read()
+          if (done) break
+          consume(decoder.decode(value, { stream: true }))
+        }
+        consume(decoder.decode())
 
-      if (!fullContent.trim()) {
-        lastError = new Error(`${provider.name} returned an empty streaming response`)
-        continue
+        if (!fullContent.trim()) {
+          lastError = new Error(`${provider.name} returned an empty streaming response`)
+          if (attempt < 2 && !emitted) continue
+          break
+        }
+        return { content: fullContent.trim(), model: provider.model, provider: provider.name }
+      } catch (error) {
+        lastError = error
+        console.error("Nora AI streaming request failed", provider.name, `attempt=${attempt}`, error)
+        // Retry transient provider/network failures only when no text reached the user.
+        // Never retry after partial output because that would duplicate the answer in the UI.
+        if (attempt < 2 && !emitted) continue
+        break
       }
-      return { content: fullContent.trim(), model: provider.model, provider: provider.name }
-    } catch (error) {
-      lastError = error
-      console.error("Nora AI streaming request failed", provider.name, error)
     }
   }
 
