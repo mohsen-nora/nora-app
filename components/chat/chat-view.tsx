@@ -39,6 +39,7 @@ export function ChatView() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [busy, setBusy] = useState(false)
+  const [loadingHistory, setLoadingHistory] = useState(true)
   const [listening, setListening] = useState(false)
   const [voiceEnabled, setVoiceEnabled] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -46,6 +47,27 @@ export function ChatView() {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
 
   useEffect(() => endRef.current?.scrollIntoView({ behavior: "smooth" }), [messages, busy])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadHistory() {
+      try {
+        const response = await fetch("/api/chat", { cache: "no-store", headers: { accept: "application/json" } })
+        const raw = await response.text()
+        const data = raw ? JSON.parse(raw) : {}
+        if (!response.ok) throw new Error(data.error || "تاریخچه گفتگو دریافت نشد.")
+        if (!cancelled && Array.isArray(data.messages)) {
+          setMessages(data.messages.filter((message: Message) => (message.role === "user" || message.role === "assistant") && typeof message.content === "string"))
+        }
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "خطای دریافت تاریخچه")
+      } finally {
+        if (!cancelled) setLoadingHistory(false)
+      }
+    }
+    void loadHistory()
+    return () => { cancelled = true }
+  }, [])
 
   function speak(text: string) {
     if (!voiceEnabled || typeof window === "undefined" || !window.speechSynthesis) return
@@ -61,12 +83,11 @@ export function ChatView() {
 
   async function sendText(contentOverride?: string) {
     const content = (contentOverride ?? input).trim()
-    if (!content || busy) return
+    if (!content || busy || loadingHistory) return
 
     setInput("")
     setError(null)
-    const next = [...messages, { role: "user" as const, content }]
-    setMessages(next)
+    setMessages((current) => [...current, { role: "user", content }])
     setBusy(true)
 
     try {
@@ -74,7 +95,7 @@ export function ChatView() {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
         cache: "no-store",
-        body: JSON.stringify({ messages: next }),
+        body: JSON.stringify({ messages: [{ role: "user", content }] }),
       })
 
       const raw = await response.text()
@@ -133,7 +154,11 @@ export function ChatView() {
   return (
     <Card className="flex min-h-[32rem] flex-col overflow-hidden">
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
-        {messages.length === 0 ? (
+        {loadingHistory ? (
+          <div className="flex h-full min-h-[24rem] items-center justify-center text-sm text-muted-foreground">
+            <Loader2 className="ml-2 h-4 w-4 animate-spin" /> در حال بارگذاری گفتگو...
+          </div>
+        ) : messages.length === 0 ? (
           <div className="flex h-full min-h-[24rem] items-center justify-center text-center text-sm text-muted-foreground">
             با نورا حرف بزنید یا پیام خود را بنویسید.
           </div>
@@ -151,14 +176,14 @@ export function ChatView() {
       </div>
       {error ? <p className="border-t border-border px-4 py-2 text-sm text-rose-400">{error}</p> : null}
       <form onSubmit={(event: FormEvent) => { event.preventDefault(); void sendText() }} className="flex gap-2 border-t border-border p-3">
-        <button type="button" onClick={toggleListening} disabled={busy} aria-label={listening ? "توقف ضبط صدا" : "صحبت با نورا"} title={listening ? "توقف ضبط صدا" : "صحبت با نورا"} className={cn("inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ring-1 ring-border", listening ? "bg-primary text-primary-foreground" : "bg-background")}>
+        <button type="button" onClick={toggleListening} disabled={busy || loadingHistory} aria-label={listening ? "توقف ضبط صدا" : "صحبت با نورا"} title={listening ? "توقف ضبط صدا" : "صحبت با نورا"} className={cn("inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ring-1 ring-border", listening ? "bg-primary text-primary-foreground" : "bg-background")}>
           {listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
         </button>
-        <input value={input} onChange={(e) => setInput(e.target.value)} disabled={busy || listening} placeholder={listening ? "نورا گوش می‌دهد..." : "با نورا صحبت کنید یا پیام بنویسید..."} className="min-w-0 flex-1 rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" />
+        <input value={input} onChange={(e) => setInput(e.target.value)} disabled={busy || listening || loadingHistory} placeholder={listening ? "نورا گوش می‌دهد..." : "با نورا صحبت کنید یا پیام بنویسید..."} className="min-w-0 flex-1 rounded-xl border border-border bg-background px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/30" />
         <button type="button" onClick={() => { setVoiceEnabled((value) => { const next = !value; if (!next && typeof window !== "undefined") window.speechSynthesis?.cancel(); return next }) }} aria-label={voiceEnabled ? "خاموش کردن صدای نورا" : "روشن کردن صدای نورا"} title={voiceEnabled ? "خاموش کردن صدای نورا" : "روشن کردن صدای نورا"} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-background ring-1 ring-border">
           {voiceEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
         </button>
-        <button type="submit" disabled={busy || !input.trim()} aria-label="ارسال" className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground disabled:opacity-50">
+        <button type="submit" disabled={busy || loadingHistory || !input.trim()} aria-label="ارسال" className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground disabled:opacity-50">
           <Send className="h-4 w-4" />
         </button>
       </form>
