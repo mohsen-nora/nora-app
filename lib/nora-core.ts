@@ -90,7 +90,7 @@ ${JSON.stringify(args.relationship)}
 حافظه‌های مرتبط و تأییدشده:
 ${memories || "- هنوز حافظه مهمی ثبت نشده است."}
 
-قانون مهم حافظه: حافظه بالا بخشی از زمینه توست. آن را طبیعی استفاده کن و هرگز با گفتن «طبق حافظه‌ام» یا فهرست کردن آن‌ها، تجربه گفتگو را خراب نکن. اگر اطلاعاتی متناقض است، از کاربر سؤال کن."
+قانون مهم حافظه: حافظه بالا بخشی از زمینه توست. آن را طبیعی استفاده کن و هرگز با گفتن «طبق حافظه‌ام» یا فهرست کردن آن‌ها، تجربه گفتگو را خراب نکن. اگر اطلاعاتی متناقض است، از کاربر سؤال کن.`
 }
 
 export async function extractMemories(userMessage: string, assistantMessage: string) {
@@ -104,14 +104,19 @@ USER: ${userMessage}
 NORA: ${assistantMessage}`
 
   try {
-    const result = await generateAiResponse([{ role: "system", content: "You extract durable memories. Output JSON only." }, { role: "user", content: prompt }])
+    const result = await generateAiResponse([
+      { role: "system", content: "You extract durable memories. Output JSON only." },
+      { role: "user", content: prompt },
+    ])
     const cleaned = result.content.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim()
     const parsed = JSON.parse(cleaned)
-    return Array.isArray(parsed?.memories) ? parsed.memories.slice(0, 3).filter((m: unknown) => {
-      if (!m || typeof m !== "object") return false
-      const item = m as Record<string, unknown>
-      return typeof item.content === "string" && item.content.trim().length > 2
-    }) : []
+    return Array.isArray(parsed?.memories)
+      ? parsed.memories.slice(0, 3).filter((m: unknown) => {
+          if (!m || typeof m !== "object") return false
+          const item = m as Record<string, unknown>
+          return typeof item.content === "string" && item.content.trim().length > 2
+        })
+      : []
   } catch {
     return []
   }
