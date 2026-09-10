@@ -4,7 +4,7 @@ import { requireOwner } from "@/lib/authz"
 
 export const dynamic = "force-dynamic"
 
-const TYPES = new Set(["fact", "preference", "goal", "relationship", "context"])
+const TYPES = new Set(["fact", "preference", "goal", "relationship", "context", "project", "important"])
 
 export async function GET() {
   const owner = await requireOwner()
