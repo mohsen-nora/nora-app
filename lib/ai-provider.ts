@@ -21,40 +21,34 @@ export function getAiProvidersForStreaming(): Provider[] {
   return providers
 }
 
+const REQUEST_TIMEOUT_MS = 25000
+const MAX_ATTEMPTS = 2
+
 export async function streamAiResponse(messages: ChatMessage[], onChunk: (text: string) => void) {
   const providers = getAiProvidersForStreaming()
   if (!providers.length) throw new Error("AI_PROVIDER_NOT_CONFIGURED")
   let lastError: unknown = null
 
   for (const provider of providers) {
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+      const abortController = new AbortController()
+      const timeout = setTimeout(() => abortController.abort(), REQUEST_TIMEOUT_MS)
       let emitted = false
       try {
-        const controller = new AbortController()
-        const timeout = setTimeout(() => controller.abort(), 35000)
-        let response: Response
-        try {
-          response = await fetch(`${provider.baseUrl.replace(/\/$/, "")}/chat/completions`, {
-            method: "POST",
-            headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}`, accept: "text/event-stream" },
-            body: JSON.stringify({
-              model: provider.model,
-              messages,
-              stream: true,
-              max_tokens: 250,
-            }),
-            cache: "no-store",
-            signal: controller.signal,
-          })
-        } finally {
-          clearTimeout(timeout)
-        }
+        const response = await fetch(`${provider.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}`, accept: "text/event-stream" },
+          body: JSON.stringify({ model: provider.model, messages, stream: true, max_tokens: 250 }),
+          cache: "no-store",
+          signal: abortController.signal,
+        })
 
         if (!response.ok || !response.body) {
           const data = await response.json().catch(() => null)
           lastError = new Error(`${provider.name} provider returned ${response.status}`)
           console.error("Nora AI streaming provider error", provider.name, response.status, data)
-          if (attempt < 2) continue
+          const retryable = response.status === 408 || response.status === 409 || response.status === 429 || response.status >= 500
+          if (retryable && attempt < MAX_ATTEMPTS) continue
           break
         }
 
@@ -81,7 +75,7 @@ export async function streamAiResponse(messages: ChatMessage[], onChunk: (text: 
                 onChunk(delta)
               }
             } catch {
-              // Ignore incomplete/non-JSON SSE lines.
+              // Ignore malformed/incomplete SSE lines.
             }
           }
         }
@@ -95,17 +89,19 @@ export async function streamAiResponse(messages: ChatMessage[], onChunk: (text: 
 
         if (!fullContent.trim()) {
           lastError = new Error(`${provider.name} returned an empty streaming response`)
-          if (attempt < 2 && !emitted) continue
+          if (attempt < MAX_ATTEMPTS && !emitted) continue
           break
         }
+
         return { content: fullContent.trim(), model: provider.model, provider: provider.name }
       } catch (error) {
         lastError = error
-        console.error("Nora AI streaming request failed", provider.name, `attempt=${attempt}`, error)
-        // Retry transient provider/network failures only when no text reached the user.
-        // Never retry after partial output because that would duplicate the answer in the UI.
-        if (attempt < 2 && !emitted) continue
+        const timedOut = error instanceof Error && error.name === "AbortError"
+        console.error("Nora AI streaming request failed", provider.name, `attempt=${attempt}`, timedOut ? "timeout" : error)
+        if (attempt < MAX_ATTEMPTS && !emitted) continue
         break
+      } finally {
+        clearTimeout(timeout)
       }
     }
   }
