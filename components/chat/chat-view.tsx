@@ -15,8 +15,26 @@ declare global { interface Window { SpeechRecognition?: SpeechRecognitionConstru
 
 function pickPersianVoice() {
   if (typeof window === "undefined" || !window.speechSynthesis) return null
-  const fa = window.speechSynthesis.getVoices().filter((voice) => voice.lang.toLowerCase().startsWith("fa"))
+  const voices = window.speechSynthesis.getVoices()
+  const fa = voices.filter((voice) => voice.lang.toLowerCase().startsWith("fa"))
   return fa.find((voice) => /female|زن|google.*persian/i.test(voice.name)) || fa[0] || null
+}
+
+function cleanTextForSpeech(text: string) {
+  return text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/^\s{0,3}#{1,6}\s*/gm, "")
+    .replace(/^\s*[-*•]\s+/gm, "")
+    .replace(/^\s*\d+[.)]\s+/gm, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/[*_~]+/g, "")
+    .replace(/[\\/|]+/g, " ")
+    .replace(/[<>={}\[\]]+/g, " ")
+    .replace(/\s*[-–—]\s*/g, "، ")
+    .replace(/\s*:+\s*/g, ": ")
+    .replace(/\s+/g, " ")
+    .trim()
 }
 
 export function ChatView() {
@@ -48,11 +66,13 @@ export function ChatView() {
 
   function speak(text: string) {
     if (!voiceEnabled || typeof window === "undefined" || !window.speechSynthesis) return
+    const cleanText = cleanTextForSpeech(text)
+    if (!cleanText) return
     window.speechSynthesis.cancel()
-    const utterance = new SpeechSynthesisUtterance(text)
+    const utterance = new SpeechSynthesisUtterance(cleanText)
     utterance.lang = "fa-IR"
-    utterance.rate = 0.95
-    utterance.pitch = 1.05
+    utterance.rate = 0.92
+    utterance.pitch = 1.02
     const voice = pickPersianVoice()
     if (voice) utterance.voice = voice
     window.speechSynthesis.speak(utterance)
