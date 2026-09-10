@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { getSessionContext } from "@/lib/authz"
 import { createClient } from "@/lib/supabase/server"
-import { generateAiResponse } from "@/lib/ai-provider"
+import { streamAiResponse } from "@/lib/ai-provider"
 
 export const dynamic = "force-dynamic"
 
@@ -32,7 +32,6 @@ export async function GET() {
     .limit(50)
 
   if (messagesError) return NextResponse.json({ error: "پیام‌های قبلی دریافت نشدند." }, { status: 500 })
-
   return NextResponse.json({
     conversation: { id: conversation.id, title: conversation.title, updatedAt: conversation.updated_at },
     messages: (messages || []).map((message) => ({ role: message.role, content: message.content })),
@@ -46,22 +45,21 @@ export async function POST(request: Request) {
 
   const body = await request.json().catch(() => null)
   const messages = Array.isArray(body?.messages) ? body.messages : []
-  const cleanMessages = messages
+  const lastUser = messages
     .filter((m: unknown) => {
       if (!m || typeof m !== "object") return false
       const item = m as Record<string, unknown>
       return item.role === "user" && typeof item.content === "string" && item.content.trim()
     })
-    .slice(-1)
-    .map((m: Record<string, unknown>) => ({ role: "user" as const, content: String(m.content).trim().slice(0, 12000) }))
+    .at(-1)
 
-  const lastUser = cleanMessages[0]
-  if (!lastUser) return NextResponse.json({ error: "پیام معتبری ارسال نشده است." }, { status: 400 })
+  if (!lastUser || typeof lastUser.content !== "string") return NextResponse.json({ error: "پیام معتبری ارسال نشده است." }, { status: 400 })
+  const userContent = lastUser.content.trim().slice(0, 12000)
 
   const supabase = await createClient()
   const { data: instance, error: instanceError } = await supabase
     .from("nora_instances")
-    .select("id,name,system_prompt,is_active")
+    .select("id,system_prompt,is_active")
     .eq("id", ctx.profile.nora_id)
     .maybeSingle()
   if (instanceError || !instance) return NextResponse.json({ error: "نمونه نورا پیدا نشد." }, { status: 404 })
@@ -77,80 +75,70 @@ export async function POST(request: Request) {
     .maybeSingle()
 
   let conversationId: string
-  let conversationTitle = existing?.title || lastUser.content.slice(0, 80)
+  let title: string
+  let history: Array<{ role: "user" | "assistant"; content: string }> = []
 
   if (existing?.id) {
     conversationId = existing.id
-    const { data: history, error: historyError } = await supabase
+    title = existing.title || userContent.slice(0, 80)
+    const { data: stored, error } = await supabase
       .from("nora_messages")
       .select("role,content")
       .eq("conversation_id", conversationId)
       .in("role", ["user", "assistant"])
       .order("created_at", { ascending: false })
-      .limit(20)
-
-    if (historyError) return NextResponse.json({ error: "تاریخچه گفتگو دریافت نشد." }, { status: 500 })
-
-    const previousMessages = (history || [])
-      .reverse()
-      .map((message) => ({ role: message.role as "user" | "assistant", content: message.content }))
-
-    const duplicateLastMessage = previousMessages.at(-1)?.role === "user" && previousMessages.at(-1)?.content === lastUser.content
-    if (!duplicateLastMessage) {
-      const { error } = await supabase.from("nora_messages").insert({ conversation_id: conversationId, role: "user", content: lastUser.content, metadata: {} })
-      if (error) return NextResponse.json({ error: "ذخیره پیام ناموفق بود." }, { status: 500 })
-      previousMessages.push(lastUser)
-    }
-
-    return await generateAndStoreResponse({ supabase, instance, conversationId, conversationTitle, messages: previousMessages })
+      .limit(18)
+    if (error) return NextResponse.json({ error: "تاریخچه گفتگو دریافت نشد." }, { status: 500 })
+    history = (stored || []).reverse().map((m) => ({ role: m.role as "user" | "assistant", content: m.content }))
+  } else {
+    title = userContent.slice(0, 80)
+    const { data: created, error } = await supabase
+      .from("nora_conversations")
+      .insert({ nora_id: instance.id, user_id: ctx.authUser.id, title, metadata: {} })
+      .select("id")
+      .single()
+    if (error || !created) return NextResponse.json({ error: "ساخت گفتگو ناموفق بود." }, { status: 500 })
+    conversationId = created.id
   }
 
-  const { data: created, error: createError } = await supabase
-    .from("nora_conversations")
-    .insert({ nora_id: instance.id, user_id: ctx.authUser.id, title: conversationTitle, metadata: {} })
-    .select("id")
-    .single()
-
-  if (createError || !created) return NextResponse.json({ error: "ساخت گفتگو ناموفق بود." }, { status: 500 })
-  conversationId = created.id
-
-  const { error: userMessageError } = await supabase.from("nora_messages").insert({ conversation_id: conversationId, role: "user", content: lastUser.content, metadata: {} })
-  if (userMessageError) return NextResponse.json({ error: "ذخیره پیام ناموفق بود." }, { status: 500 })
-
-  return await generateAndStoreResponse({ supabase, instance, conversationId, conversationTitle, messages: [lastUser] })
-}
-
-async function generateAndStoreResponse({
-  supabase,
-  instance,
-  conversationId,
-  conversationTitle,
-  messages,
-}: {
-  supabase: Awaited<ReturnType<typeof createClient>>
-  instance: { id: string; system_prompt: string | null }
-  conversationId: string
-  conversationTitle: string
-  messages: Array<{ role: "user" | "assistant"; content: string }>
-}) {
-  const systemPrompt = instance.system_prompt || "You are Nora, a personal AI assistant."
-
-  let aiResult: Awaited<ReturnType<typeof generateAiResponse>>
-  try {
-    aiResult = await generateAiResponse([{ role: "system", content: systemPrompt }, ...messages])
-  } catch (error) {
-    console.error("Nora AI providers exhausted", error)
-    return NextResponse.json({ error: "سرویس هوش مصنوعی پاسخ نداد." }, { status: 502 })
+  const userMessage = { role: "user" as const, content: userContent }
+  const previousLast = history.at(-1)
+  if (!(previousLast?.role === "user" && previousLast.content === userContent)) {
+    const { error } = await supabase.from("nora_messages").insert({ conversation_id: conversationId, role: "user", content: userContent, metadata: {} })
+    if (error) return NextResponse.json({ error: "ذخیره پیام ناموفق بود." }, { status: 500 })
+    history.push(userMessage)
   }
 
-  const { content, model, provider } = aiResult
-  const { error: assistantMessageError } = await supabase.from("nora_messages").insert({ conversation_id: conversationId, role: "assistant", content, metadata: { model, provider } })
-  if (assistantMessageError) return NextResponse.json({ error: "پاسخ تولید شد اما ذخیره تاریخچه گفتگو کامل نشد." }, { status: 500 })
+  const aiMessages = [{ role: "system" as const, content: instance.system_prompt || "You are Nora, a personal AI assistant." }, ...history.slice(-20)]
+  const encoder = new TextEncoder()
+  let fullContent = ""
+  let providerInfo = { model: "", provider: "" }
 
-  await supabase
-    .from("nora_conversations")
-    .update({ title: conversationTitle, updated_at: new Date().toISOString() })
-    .eq("id", conversationId)
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        const result = await streamAiResponse(aiMessages, (chunk) => {
+          fullContent += chunk
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "delta", content: chunk })}\n\n`))
+        })
+        providerInfo = { model: result.model, provider: result.provider }
+        await supabase.from("nora_messages").insert({ conversation_id: conversationId, role: "assistant", content: fullContent.trim(), metadata: providerInfo })
+        await supabase.from("nora_conversations").update({ title, updated_at: new Date().toISOString() }).eq("id", conversationId)
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", conversationId })}\n\n`))
+        controller.close()
+      } catch (error) {
+        console.error("Nora AI streaming failed", error)
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", error: "سرویس هوش مصنوعی پاسخ نداد." })}\n\n`))
+        controller.close()
+      }
+    },
+  })
 
-  return NextResponse.json({ content, conversationId })
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
+  })
 }
