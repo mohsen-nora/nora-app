@@ -10,6 +10,7 @@ export type NoraRelationshipState = {
   humor: number
   supportiveness: number
   conversations: number
+  lastInteractionAt?: string
 }
 
 const DEFAULT_RELATIONSHIP: NoraRelationshipState = {
@@ -34,18 +35,42 @@ export function normalizeRelationship(value: unknown): NoraRelationshipState {
     humor: n("humor", DEFAULT_RELATIONSHIP.humor),
     supportiveness: n("supportiveness", DEFAULT_RELATIONSHIP.supportiveness),
     conversations: Math.max(0, Number(input.conversations) || 0),
+    ...(typeof input.lastInteractionAt === "string" ? { lastInteractionAt: input.lastInteractionAt } : {}),
   }
 }
 
-export function advanceRelationship(value: unknown): NoraRelationshipState {
+function interactionDelta(userMessage: string) {
+  const text = userMessage.toLowerCase()
+  const vulnerable = /(خسته|ناراح|غمگین|استرس|نگران|میترسم|می‌ترسم|افسرده|مشکل دارم|کمک میخوام|کمک می‌خوام)/.test(text)
+  const warm = /(مرسی|ممنون|دوستت دارم|دمت گرم|عالی|خوبه|نورا)/.test(text)
+  const joking = /(😂|😄|شوخی|خنده|باحال|🤣)/.test(text)
+  return {
+    trust: vulnerable ? 0.3 : warm ? 0.12 : 0.05,
+    closeness: vulnerable ? 0.25 : warm ? 0.15 : 0.04,
+    humor: joking ? 0.4 : 0,
+    supportiveness: vulnerable ? 0.2 : 0,
+  }
+}
+
+export function advanceRelationship(value: unknown, userMessage = ""): NoraRelationshipState {
   const state = normalizeRelationship(value)
+  const delta = interactionDelta(userMessage)
   return {
     ...state,
     familiarity: Math.min(100, state.familiarity + 1),
-    trust: Math.min(100, state.trust + 0.15),
-    closeness: Math.min(100, state.closeness + 0.1),
+    trust: Math.min(100, state.trust + delta.trust),
+    closeness: Math.min(100, state.closeness + delta.closeness),
+    humor: Math.min(100, state.humor + delta.humor),
+    supportiveness: Math.min(100, state.supportiveness + delta.supportiveness),
     conversations: state.conversations + 1,
+    lastInteractionAt: new Date().toISOString(),
   }
+}
+
+function relationshipGuidance(state: NoraRelationshipState) {
+  const closeness = state.closeness >= 65 ? "صمیمی و آشنا" : state.closeness >= 40 ? "آشنا و گرم" : "در حال شکل‌گیری"
+  const trust = state.trust >= 75 ? "اعتماد بالا" : state.trust >= 55 ? "اعتماد متوسط رو به بالا" : "اعتماد هنوز در حال شکل‌گیری"
+  return `سطح رابطه: ${closeness}؛ ${trust}. صمیمیت را طبیعی و تدریجی نگه دار و هرگز برای ایجاد رابطه، احساس یا خاطره جعلی نساز.`
 }
 
 function memoryText(memories: NoraMemory[]) {
@@ -86,6 +111,7 @@ ${personality}
 
 وضعیت رابطه (محاسباتی):
 ${JSON.stringify(args.relationship)}
+${relationshipGuidance(args.relationship)}
 
 حافظه‌های مرتبط و تأییدشده:
 ${memories || "- هنوز حافظه مهمی ثبت نشده است."}
