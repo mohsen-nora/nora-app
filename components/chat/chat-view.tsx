@@ -83,8 +83,11 @@ export function ChatView({ email, isOwner }: Props) {
               else next.push({ role: "assistant", content: answer })
               return next
             })
-          } else if (e.type === "done") finished = true
-          else if (e.type === "error") streamError = e.error || "نورا پاسخ نداد."
+          } else if (e.type === "done") {
+            finished = true
+            // پاسخ نورا تمام شده؛ عملیات ذخیره حافظه نباید کادر پیام را قفل کند.
+            setBusy(false)
+          } else if (e.type === "error") streamError = e.error || "نورا پاسخ نداد."
         } catch {}
       }
       while (true) {
