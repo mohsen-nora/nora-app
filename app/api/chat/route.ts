@@ -7,7 +7,24 @@ import type { NoraMemory } from "@/lib/types"
 
 export const dynamic = "force-dynamic"
 
-async function getNoraContext(supabase: Awaited<ReturnType<typeof createClient>>, noraId: string, userId: string) {
+function memoryTokens(text: string) {
+  return new Set(
+    text
+      .toLocaleLowerCase("fa")
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3),
+  )
+}
+
+async function getNoraContext(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  noraId: string,
+  userId: string,
+  currentMessage: string,
+  maxItems = 30,
+) {
   const { data: memories } = await supabase
     .from("nora_memory")
     .select("*")
@@ -15,9 +32,19 @@ async function getNoraContext(supabase: Awaited<ReturnType<typeof createClient>>
     .eq("user_id", userId)
     .order("importance", { ascending: false })
     .order("updated_at", { ascending: false })
-    .limit(30)
+    .limit(200)
 
-  return (memories || []) as NoraMemory[]
+  const query = memoryTokens(currentMessage)
+  return (memories || [])
+    .map((memory) => {
+      const contentTokens = memoryTokens(`${memory.content} ${memory.memory_type || ""}`)
+      let overlap = 0
+      for (const token of query) if (contentTokens.has(token)) overlap += 1
+      return { memory, score: overlap * 4 + Number(memory.importance || 5) * 0.5 }
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxItems)
+    .map(({ memory }) => memory) as NoraMemory[]
 }
 
 export async function GET() {
@@ -74,11 +101,16 @@ export async function POST(request: Request) {
   const supabase = await createClient()
   const { data: instance, error: instanceError } = await supabase
     .from("nora_instances")
-    .select("id,name,system_prompt,personality,is_active")
+    .select("id,name,system_prompt,personality,settings,is_active")
     .eq("id", ctx.profile.nora_id)
     .maybeSingle()
   if (instanceError || !instance) return NextResponse.json({ error: "نمونه نورا پیدا نشد." }, { status: 404 })
   if (instance.is_active === false) return NextResponse.json({ error: "نورا در حال حاضر غیرفعال است." }, { status: 503 })
+
+  const settings = (instance.settings && typeof instance.settings === "object" ? instance.settings : {}) as Record<string, unknown>
+  const memoryEnabled = settings.memory_enabled !== false
+  const memoryAutoSave = settings.memory_auto_save !== false
+  const memoryMinImportance = Math.max(1, Math.min(10, Number(settings.memory_min_importance) || 6))
 
   const { data: existing } = await supabase
     .from("nora_conversations")
@@ -127,7 +159,7 @@ export async function POST(request: Request) {
     history.push(userMessage)
   }
 
-  const memories = await getNoraContext(supabase, instance.id, ctx.authUser.id)
+  const memories = memoryEnabled ? await getNoraContext(supabase, instance.id, ctx.authUser.id, userContent) : []
   const relationship = normalizeRelationship(conversationMetadata.relationship)
   const systemPrompt = buildNoraSystemPrompt({
     name: instance.name,
@@ -155,22 +187,25 @@ export async function POST(request: Request) {
         await supabase.from("nora_messages").insert({ conversation_id: conversationId, role: "assistant", content: fullContent.trim(), metadata: providerInfo })
         await supabase.from("nora_conversations").update({ title, updated_at: new Date().toISOString(), metadata: nextMetadata }).eq("id", conversationId)
 
-        // Learn only durable, user-provided facts; never store the whole conversation as memory.
-        const extracted = await extractMemories(userContent, fullContent.trim())
-        for (const memory of extracted) {
-          const content = String(memory.content).trim().slice(0, 1000)
-          const memoryType = String(memory.type || "fact").slice(0, 50)
-          const importance = Math.max(1, Math.min(10, Number(memory.importance) || 5))
-          const duplicate = memories.some((m) => m.content.trim().toLowerCase() === content.toLowerCase())
-          if (!duplicate && content) {
-            await supabase.from("nora_memory").insert({
-              nora_id: instance.id,
-              user_id: ctx.authUser.id,
-              memory_type: memoryType,
-              content,
-              importance,
-              metadata: { source: "conversation", conversation_id: conversationId },
-            })
+        if (memoryEnabled && memoryAutoSave) {
+          // Learn only durable, user-provided facts; never store the whole conversation as memory.
+          const extracted = await extractMemories(userContent, fullContent.trim())
+          for (const memory of extracted) {
+            const content = String(memory.content).trim().slice(0, 1000)
+            const memoryType = String(memory.type || "fact").slice(0, 50)
+            const importance = Math.max(1, Math.min(10, Number(memory.importance) || 5))
+            if (importance < memoryMinImportance) continue
+            const duplicate = memories.some((m) => m.content.trim().toLowerCase() === content.toLowerCase())
+            if (!duplicate && content) {
+              await supabase.from("nora_memory").insert({
+                nora_id: instance.id,
+                user_id: ctx.authUser.id,
+                memory_type: memoryType,
+                content,
+                importance,
+                metadata: { source: "conversation", conversation_id: conversationId },
+              })
+            }
           }
         }
 
