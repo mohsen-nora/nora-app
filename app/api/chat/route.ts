@@ -136,38 +136,46 @@ export async function POST(request: Request) {
         providerInfo = { model: result.model, provider: result.provider }
         const nextRelationship = advanceRelationship(relationship, userContent)
         const nextMetadata = { ...conversationMetadata, relationship: nextRelationship }
-        await supabase.from("nora_messages").insert({ conversation_id: conversationId, role: "assistant", content: fullContent.trim(), metadata: providerInfo })
+        const trimmedAnswer = fullContent.trim()
+
+        await supabase.from("nora_messages").insert({ conversation_id: conversationId, role: "assistant", content: trimmedAnswer, metadata: providerInfo })
         await supabase.from("nora_conversations").update({ title, updated_at: new Date().toISOString(), metadata: nextMetadata }).eq("id", conversationId)
 
-        // پاسخ اصلی همین‌جا تمام شده است؛ کلاینت را منتظر عملیات حافظه و پروفایل نگذار.
+        // پاسخ اصلی تمام شده؛ همین حالا کلاینت را آزاد کن.
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", conversationId })}\n\n`))
-
-        if (memoryEnabled && memoryAutoSave) {
-          const extracted = await extractMemories(userContent, fullContent.trim())
-          for (const memory of extracted) {
-            const content = String(memory.content).trim().slice(0, 1000)
-            const allowedTypes = new Set(["fact", "preference", "goal", "relationship", "project", "important"])
-            const memoryType = allowedTypes.has(String(memory.type)) ? String(memory.type) : "fact"
-            const importance = Math.max(1, Math.min(10, Number(memory.importance) || 5))
-            if (importance < memoryMinImportance) continue
-            const duplicate = memories.some((m) => m.content.trim().toLocaleLowerCase("fa") === content.toLocaleLowerCase("fa"))
-            if (!duplicate && content) await supabase.from("nora_memory").insert({ nora_id: instance.id, user_id: ctx.authUser.id, memory_type: memoryType, content, importance, metadata: { source: "conversation", conversation_id: conversationId } })
-          }
-        }
-
-        if (memoryEnabled && memoryAutoSave) {
-          const profileDelta = await extractUserProfileDelta(userContent)
-          const nextProfile = mergeProfile(userProfile, profileDelta)
-          if (nextProfile.updated_at !== userProfile.updated_at) {
-            await supabase.from("nora_users").update({ profile: nextProfile }).eq("id", ctx.authUser.id).eq("nora_id", instance.id)
-          }
-        }
-
         controller.close()
+
+        // حافظه و پروفایل نباید زمان پاسخ کاربر را طولانی کنند.
+        if (memoryEnabled && memoryAutoSave) {
+          void (async () => {
+            try {
+              const extracted = await extractMemories(userContent, trimmedAnswer)
+              for (const memory of extracted) {
+                const content = String(memory.content).trim().slice(0, 1000)
+                const allowedTypes = new Set(["fact", "preference", "goal", "relationship", "project", "important"])
+                const memoryType = allowedTypes.has(String(memory.type)) ? String(memory.type) : "fact"
+                const importance = Math.max(1, Math.min(10, Number(memory.importance) || 5))
+                if (importance < memoryMinImportance) continue
+                const duplicate = memories.some((m) => m.content.trim().toLocaleLowerCase("fa") === content.toLocaleLowerCase("fa"))
+                if (!duplicate && content) await supabase.from("nora_memory").insert({ nora_id: instance.id, user_id: ctx.authUser.id, memory_type: memoryType, content, importance, metadata: { source: "conversation", conversation_id: conversationId } })
+              }
+
+              const profileDelta = await extractUserProfileDelta(userContent)
+              const nextProfile = mergeProfile(userProfile, profileDelta)
+              if (nextProfile.updated_at !== userProfile.updated_at) {
+                await supabase.from("nora_users").update({ profile: nextProfile }).eq("id", ctx.authUser.id).eq("nora_id", instance.id)
+              }
+            } catch (backgroundError) {
+              console.error("Nora background memory processing failed", backgroundError)
+            }
+          })()
+        }
       } catch (error) {
         console.error("Nora AI streaming failed", error)
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", error: "سرویس هوش مصنوعی پاسخ نداد." })}\n\n`))
-        controller.close()
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", error: "سرویس هوش مصنوعی پاسخ نداد." })}\n\n`))
+          controller.close()
+        } catch {}
       }
     },
   })
