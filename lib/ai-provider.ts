@@ -31,7 +31,12 @@ export async function streamAiResponse(messages: ChatMessage[], onChunk: (text: 
       const response = await fetch(`${provider.baseUrl.replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}`, accept: "text/event-stream" },
-        body: JSON.stringify({ model: provider.model, messages, stream: true }),
+        body: JSON.stringify({
+          model: provider.model,
+          messages,
+          stream: true,
+          max_tokens: 450,
+        }),
         cache: "no-store",
       })
 
@@ -91,7 +96,6 @@ export async function streamAiResponse(messages: ChatMessage[], onChunk: (text: 
 }
 
 export async function generateAiResponse(messages: ChatMessage[]) {
-  let result: Awaited<ReturnType<typeof streamAiResponse>> | null = null
-  result = await streamAiResponse(messages, () => {})
+  const result = await streamAiResponse(messages, () => {})
   return result
 }
