@@ -13,6 +13,19 @@ export type NoraRelationshipState = {
   lastInteractionAt?: string
 }
 
+export type NoraUserProfile = {
+  communication_style?: "short" | "detailed" | "mixed"
+  tone_preference?: "warm" | "direct" | "formal" | "casual" | "mixed"
+  interests: string[]
+  goals: string[]
+  ongoing_projects: string[]
+  preferences: string[]
+  dislikes: string[]
+  decision_style?: "fast" | "analytical" | "balanced"
+  confidence: number
+  updated_at?: string
+}
+
 const DEFAULT_RELATIONSHIP: NoraRelationshipState = {
   familiarity: 0,
   trust: 50,
@@ -20,6 +33,15 @@ const DEFAULT_RELATIONSHIP: NoraRelationshipState = {
   humor: 60,
   supportiveness: 80,
   conversations: 0,
+}
+
+export const DEFAULT_USER_PROFILE: NoraUserProfile = {
+  interests: [],
+  goals: [],
+  ongoing_projects: [],
+  preferences: [],
+  dislikes: [],
+  confidence: 0,
 }
 
 export function normalizeRelationship(value: unknown): NoraRelationshipState {
@@ -36,6 +58,26 @@ export function normalizeRelationship(value: unknown): NoraRelationshipState {
     supportiveness: n("supportiveness", DEFAULT_RELATIONSHIP.supportiveness),
     conversations: Math.max(0, Number(input.conversations) || 0),
     ...(typeof input.lastInteractionAt === "string" ? { lastInteractionAt: input.lastInteractionAt } : {}),
+  }
+}
+
+export function normalizeUserProfile(value: unknown): NoraUserProfile {
+  const input = (value && typeof value === "object" ? value : {}) as Record<string, unknown>
+  const list = (key: keyof NoraUserProfile) => Array.isArray(input[key]) ? input[key].filter((v): v is string => typeof v === "string" && v.trim()).slice(0, 30) : []
+  const communication = ["short", "detailed", "mixed"].includes(String(input.communication_style)) ? input.communication_style as NoraUserProfile["communication_style"] : undefined
+  const tone = ["warm", "direct", "formal", "casual", "mixed"].includes(String(input.tone_preference)) ? input.tone_preference as NoraUserProfile["tone_preference"] : undefined
+  const decision = ["fast", "analytical", "balanced"].includes(String(input.decision_style)) ? input.decision_style as NoraUserProfile["decision_style"] : undefined
+  return {
+    ...(communication ? { communication_style: communication } : {}),
+    ...(tone ? { tone_preference: tone } : {}),
+    interests: list("interests"),
+    goals: list("goals"),
+    ongoing_projects: list("ongoing_projects"),
+    preferences: list("preferences"),
+    dislikes: list("dislikes"),
+    ...(decision ? { decision_style: decision } : {}),
+    confidence: Math.max(0, Math.min(100, Number(input.confidence) || 0)),
+    ...(typeof input.updated_at === "string" ? { updated_at: input.updated_at } : {}),
   }
 }
 
@@ -73,6 +115,20 @@ function relationshipGuidance(state: NoraRelationshipState) {
   return `سطح رابطه: ${closeness}؛ ${trust}. صمیمیت را طبیعی و تدریجی نگه دار و هرگز برای ایجاد رابطه، احساس یا خاطره جعلی نساز.`
 }
 
+function profileText(profile: NoraUserProfile) {
+  const rows = [
+    ["سبک ارتباطی", profile.communication_style],
+    ["لحن ترجیحی", profile.tone_preference],
+    ["علایق", profile.interests.join("، ")],
+    ["اهداف", profile.goals.join("، ")],
+    ["پروژه‌های جاری", profile.ongoing_projects.join("، ")],
+    ["ترجیحات", profile.preferences.join("، ")],
+    ["مواردی که دوست ندارد", profile.dislikes.join("، ")],
+    ["سبک تصمیم‌گیری", profile.decision_style],
+  ]
+  return rows.filter(([, value]) => value).map(([label, value]) => `- ${label}: ${value}`).join("\n") || "- هنوز پروفایل شناختی شکل نگرفته است."
+}
+
 function memoryText(memories: NoraMemory[]) {
   return memories
     .filter((m) => m.content?.trim())
@@ -87,11 +143,11 @@ export function buildNoraSystemPrompt(args: {
   personality?: Record<string, unknown> | null
   memories: NoraMemory[]
   relationship: NoraRelationshipState
+  profile?: NoraUserProfile
 }) {
-  const personality = args.personality && Object.keys(args.personality).length
-    ? JSON.stringify(args.personality, null, 2)
-    : "{}"
+  const personality = args.personality && Object.keys(args.personality).length ? JSON.stringify(args.personality, null, 2) : "{}"
   const memories = memoryText(args.memories)
+  const profile = normalizeUserProfile(args.profile)
 
   return `${args.systemPrompt || "تو نورا هستی؛ یک همراه هوش مصنوعی شخصی، صمیمی و قابل اعتماد."}
 
@@ -108,6 +164,10 @@ export function buildNoraSystemPrompt(args: {
 
 پروفایل شخصیت قابل کنترل توسط مالک:
 ${personality}
+
+پروفایل شناختی کاربر:
+${profileText(profile)}
+این پروفایل قطعی و معصوم از خطا نیست. فقط از آن برای شخصی‌سازی استفاده کن؛ اگر کاربر خلاف آن گفت، گفته جدید او را مقدم بدان.
 
 وضعیت رابطه (محاسباتی):
 ${JSON.stringify(args.relationship)}
@@ -130,20 +190,29 @@ USER: ${userMessage}
 NORA: ${assistantMessage}`
 
   try {
-    const result = await generateAiResponse([
-      { role: "system", content: "You extract durable memories. Output JSON only." },
-      { role: "user", content: prompt },
-    ])
+    const result = await generateAiResponse([{ role: "system", content: "You extract durable memories. Output JSON only." }, { role: "user", content: prompt }])
     const cleaned = result.content.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim()
     const parsed = JSON.parse(cleaned)
-    return Array.isArray(parsed?.memories)
-      ? parsed.memories.slice(0, 3).filter((m: unknown) => {
-          if (!m || typeof m !== "object") return false
-          const item = m as Record<string, unknown>
-          return typeof item.content === "string" && item.content.trim().length > 2
-        })
-      : []
-  } catch {
-    return []
-  }
+    return Array.isArray(parsed?.memories) ? parsed.memories.slice(0, 3).filter((m: unknown) => {
+      if (!m || typeof m !== "object") return false
+      const item = m as Record<string, unknown>
+      return typeof item.content === "string" && item.content.trim().length > 2
+    }) : []
+  } catch { return [] }
+}
+
+export async function extractUserProfileDelta(userMessage: string) {
+  const prompt = `از پیام کاربر فقط تغییرات پایدار و قابل اتکای «پروفایل شناختی» را استخراج کن. فقط چیزهایی را ثبت کن که خود کاربر صریحاً گفته یا به‌وضوح از ترجیح مستقیم او مشخص است. حدس روان‌شناختی، تشخیص، سن، جنسیت، مذهب، سیاست، وضعیت پزشکی، مالی یا سایر داده‌های حساس را استخراج نکن مگر اینکه برای سبک گفتگو لازم باشد؛ در این پروفایل آن‌ها را ذخیره نکن.
+
+فقط JSON معتبر بده:
+{"communication_style":"short|detailed|mixed|null","tone_preference":"warm|direct|formal|casual|mixed|null","interests":[],"goals":[],"ongoing_projects":[],"preferences":[],"dislikes":[],"decision_style":"fast|analytical|balanced|null"}
+حداکثر 3 مورد برای هر آرایه. آرایه‌ها فقط شامل مواردی باشند که از همین پیام قابل اتکا هستند. اگر تغییری نیست، آرایه خالی و فیلدهای انتخابی null باشند.
+
+USER: ${userMessage}`
+  try {
+    const result = await generateAiResponse([{ role: "system", content: "Extract only explicit, durable, non-sensitive user profile signals. Output JSON only." }, { role: "user", content: prompt }])
+    const cleaned = result.content.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim()
+    const parsed = JSON.parse(cleaned)
+    return parsed && typeof parsed === "object" ? parsed : {}
+  } catch { return {} }
 }
