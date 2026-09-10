@@ -25,12 +25,15 @@ async function getNoraContext(supabase: Awaited<ReturnType<typeof createClient>>
 function mergeProfile(current: unknown, delta: unknown) {
   const base = normalizeUserProfile(current || DEFAULT_USER_PROFILE)
   const input = (delta && typeof delta === "object" ? delta : {}) as Record<string, unknown>
-  const list = (key: keyof typeof base) => Array.isArray(input[key]) ? input[key].filter((v): v is string => typeof v === "string" && v.trim()).map((v) => v.trim()).slice(0, 3) : []
+  const list = (key: string) => Array.isArray(input[key]) ? input[key].filter((v): v is string => typeof v === "string" && Boolean(v.trim())).map((v) => v.trim()).slice(0, 3) : []
   const mergedList = (existing: string[], incoming: string[]) => Array.from(new Set([...existing, ...incoming])).slice(-30)
   const communication = ["short", "detailed", "mixed"].includes(String(input.communication_style)) ? String(input.communication_style) as typeof base.communication_style : base.communication_style
   const tone = ["warm", "direct", "formal", "casual", "mixed"].includes(String(input.tone_preference)) ? String(input.tone_preference) as typeof base.tone_preference : base.tone_preference
   const decision = ["fast", "analytical", "balanced"].includes(String(input.decision_style)) ? String(input.decision_style) as typeof base.decision_style : base.decision_style
-  const incomingCount = ["interests", "goals", "ongoing_projects", "preferences", "dislikes"].reduce((n, key) => n + list(key as keyof typeof base).length, 0)
+  const incomingCount = ["interests", "goals", "ongoing_projects", "preferences", "dislikes"].reduce((n, key) => n + list(key).length, 0)
+  const hasScalarChange = communication !== base.communication_style || tone !== base.tone_preference || decision !== base.decision_style
+  const hasListChange = incomingCount > 0
+  if (!hasScalarChange && !hasListChange) return base
   return {
     ...base,
     ...(communication ? { communication_style: communication } : {}),
@@ -41,7 +44,7 @@ function mergeProfile(current: unknown, delta: unknown) {
     ongoing_projects: mergedList(base.ongoing_projects, list("ongoing_projects")),
     preferences: mergedList(base.preferences, list("preferences")),
     dislikes: mergedList(base.dislikes, list("dislikes")),
-    confidence: Math.min(100, base.confidence + Math.min(8, incomingCount * 2)),
+    confidence: Math.min(100, base.confidence + Math.min(8, incomingCount * 2 + (hasScalarChange ? 2 : 0))),
     updated_at: new Date().toISOString(),
   }
 }
@@ -68,7 +71,7 @@ export async function POST(request: Request) {
   const lastUser = messages.filter((m: unknown) => {
     if (!m || typeof m !== "object") return false
     const item = m as Record<string, unknown>
-    return item.role === "user" && typeof item.content === "string" && item.content.trim()
+    return item.role === "user" && typeof item.content === "string" && Boolean(item.content.trim())
   }).at(-1)
   if (!lastUser || typeof lastUser.content !== "string") return NextResponse.json({ error: "پیام معتبری ارسال نشده است." }, { status: 400 })
   const userContent = lastUser.content.trim().slice(0, 12000)
@@ -81,6 +84,7 @@ export async function POST(request: Request) {
   const memoryEnabled = settings.memory_enabled !== false
   const memoryAutoSave = settings.memory_auto_save !== false
   const memoryMinImportance = Math.max(1, Math.min(10, Number(settings.memory_min_importance) || 6))
+  const memoryMaxItems = Math.max(1, Math.min(100, Number(settings.memory_max_items) || 30))
 
   const { data: userRow } = await supabase.from("nora_users").select("profile").eq("id", ctx.authUser.id).eq("nora_id", instance.id).maybeSingle()
   const userProfile = normalizeUserProfile(userRow?.profile || DEFAULT_USER_PROFILE)
@@ -114,7 +118,7 @@ export async function POST(request: Request) {
     history.push(userMessage)
   }
 
-  const memories = memoryEnabled ? await getNoraContext(supabase, instance.id, ctx.authUser.id, userContent) : []
+  const memories = memoryEnabled ? await getNoraContext(supabase, instance.id, ctx.authUser.id, userContent, memoryMaxItems) : []
   const relationship = normalizeRelationship(conversationMetadata.relationship)
   const systemPrompt = buildNoraSystemPrompt({ name: instance.name, systemPrompt: instance.system_prompt, personality: instance.personality, memories, relationship, profile: userProfile })
   const aiMessages = [{ role: "system" as const, content: systemPrompt }, ...history.slice(-20)]
@@ -151,7 +155,7 @@ export async function POST(request: Request) {
         if (memoryEnabled && memoryAutoSave) {
           const profileDelta = await extractUserProfileDelta(userContent)
           const nextProfile = mergeProfile(userProfile, profileDelta)
-          if (nextProfile.updated_at !== userProfile.updated_at || nextProfile.confidence !== userProfile.confidence) {
+          if (nextProfile.updated_at !== userProfile.updated_at) {
             await supabase.from("nora_users").update({ profile: nextProfile }).eq("id", ctx.authUser.id).eq("nora_id", instance.id)
           }
         }
