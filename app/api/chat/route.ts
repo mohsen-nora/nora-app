@@ -11,8 +11,8 @@ function memoryTokens(text: string) {
   return new Set(text.toLocaleLowerCase("fa").replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).map((token) => token.trim()).filter((token) => token.length >= 3))
 }
 
-async function getNoraContext(supabase: Awaited<ReturnType<typeof createClient>>, noraId: string, userId: string, currentMessage: string, maxItems = 30) {
-  const { data: memories } = await supabase.from("nora_memory").select("*").eq("nora_id", noraId).eq("user_id", userId).order("importance", { ascending: false }).order("updated_at", { ascending: false }).limit(200)
+async function getNoraContext(supabase: Awaited<ReturnType<typeof createClient>>, noraId: string, userId: string, currentMessage: string, maxItems = 12) {
+  const { data: memories } = await supabase.from("nora_memory").select("*").eq("nora_id", noraId).eq("user_id", userId).order("importance", { ascending: false }).order("updated_at", { ascending: false }).limit(100)
   const query = memoryTokens(currentMessage)
   return (memories || []).map((memory) => {
     const contentTokens = memoryTokens(`${memory.content} ${memory.memory_type || ""}`)
@@ -84,12 +84,15 @@ export async function POST(request: Request) {
   const memoryEnabled = settings.memory_enabled !== false
   const memoryAutoSave = settings.memory_auto_save !== false
   const memoryMinImportance = Math.max(1, Math.min(10, Number(settings.memory_min_importance) || 6))
-  const memoryMaxItems = Math.max(1, Math.min(100, Number(settings.memory_max_items) || 30))
+  const memoryMaxItems = Math.max(1, Math.min(30, Number(settings.memory_max_items) || 12))
 
-  const { data: userRow } = await supabase.from("nora_users").select("profile").eq("id", ctx.authUser.id).eq("nora_id", instance.id).maybeSingle()
+  // خواندن پروفایل و آخرین گفتگو مستقل‌اند؛ موازی اجرا می‌شوند تا زمان شروع پاسخ کم شود.
+  const [{ data: userRow }, { data: existing }] = await Promise.all([
+    supabase.from("nora_users").select("profile").eq("id", ctx.authUser.id).eq("nora_id", instance.id).maybeSingle(),
+    supabase.from("nora_conversations").select("id,title,metadata").eq("nora_id", instance.id).eq("user_id", ctx.authUser.id).order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+  ])
   const userProfile = normalizeUserProfile(userRow?.profile || DEFAULT_USER_PROFILE)
 
-  const { data: existing } = await supabase.from("nora_conversations").select("id,title,metadata").eq("nora_id", instance.id).eq("user_id", ctx.authUser.id).order("updated_at", { ascending: false }).limit(1).maybeSingle()
   let conversationId: string
   let title: string
   let conversationMetadata: Record<string, unknown> = {}
@@ -99,29 +102,51 @@ export async function POST(request: Request) {
     conversationId = existing.id
     title = existing.title || userContent.slice(0, 80)
     conversationMetadata = (existing.metadata && typeof existing.metadata === "object" ? existing.metadata : {}) as Record<string, unknown>
-    const { data: stored, error } = await supabase.from("nora_messages").select("role,content").eq("conversation_id", conversationId).in("role", ["user", "assistant"]).order("created_at", { ascending: false }).limit(18)
+    const [{ data: stored, error }, memories] = await Promise.all([
+      supabase.from("nora_messages").select("role,content").eq("conversation_id", conversationId).in("role", ["user", "assistant"]).order("created_at", { ascending: false }).limit(12),
+      memoryEnabled ? getNoraContext(supabase, instance.id, ctx.authUser.id, userContent, memoryMaxItems) : Promise.resolve([] as NoraMemory[]),
+    ])
     if (error) return NextResponse.json({ error: "تاریخچه گفتگو دریافت نشد." }, { status: 500 })
     history = (stored || []).reverse().map((m) => ({ role: m.role as "user" | "assistant", content: m.content }))
-  } else {
-    title = userContent.slice(0, 80)
-    const { data: created, error } = await supabase.from("nora_conversations").insert({ nora_id: instance.id, user_id: ctx.authUser.id, title, metadata: {} }).select("id,metadata").single()
-    if (error || !created) return NextResponse.json({ error: "ساخت گفتگو ناموفق بود." }, { status: 500 })
-    conversationId = created.id
-    conversationMetadata = {}
+    return await buildChatResponse({ ctx, supabase, instance, settings, memoryEnabled, memoryAutoSave, memoryMinImportance, userProfile, conversationId, title, conversationMetadata, history, userContent, memories })
   }
 
-  const userMessage = { role: "user" as const, content: userContent }
+  title = userContent.slice(0, 80)
+  const { data: created, error: createError } = await supabase.from("nora_conversations").insert({ nora_id: instance.id, user_id: ctx.authUser.id, title, metadata: {} }).select("id,metadata").single()
+  if (createError || !created) return NextResponse.json({ error: "ساخت گفتگو ناموفق بود." }, { status: 500 })
+  conversationId = created.id
+  conversationMetadata = {}
+
+  const memories = memoryEnabled ? await getNoraContext(supabase, instance.id, ctx.authUser.id, userContent, memoryMaxItems) : []
+  return await buildChatResponse({ ctx, supabase, instance, settings, memoryEnabled, memoryAutoSave, memoryMinImportance, userProfile, conversationId, title, conversationMetadata, history, userContent, memories })
+}
+
+async function buildChatResponse({ ctx, supabase, instance, memoryEnabled, memoryAutoSave, memoryMinImportance, userProfile, conversationId, title, conversationMetadata, history, userContent, memories }: {
+  ctx: Awaited<ReturnType<typeof getSessionContext>> & object
+  supabase: Awaited<ReturnType<typeof createClient>>
+  instance: any
+  settings: Record<string, unknown>
+  memoryEnabled: boolean
+  memoryAutoSave: boolean
+  memoryMinImportance: number
+  userProfile: ReturnType<typeof normalizeUserProfile>
+  conversationId: string
+  title: string
+  conversationMetadata: Record<string, unknown>
+  history: Array<{ role: "user" | "assistant"; content: string }>
+  userContent: string
+  memories: NoraMemory[]
+}) {
   const previousLast = history.at(-1)
   if (!(previousLast?.role === "user" && previousLast.content === userContent)) {
     const { error } = await supabase.from("nora_messages").insert({ conversation_id: conversationId, role: "user", content: userContent, metadata: {} })
     if (error) return NextResponse.json({ error: "ذخیره پیام ناموفق بود." }, { status: 500 })
-    history.push(userMessage)
+    history.push({ role: "user", content: userContent })
   }
 
-  const memories = memoryEnabled ? await getNoraContext(supabase, instance.id, ctx.authUser.id, userContent, memoryMaxItems) : []
   const relationship = normalizeRelationship(conversationMetadata.relationship)
   const systemPrompt = buildNoraSystemPrompt({ name: instance.name, systemPrompt: instance.system_prompt, personality: instance.personality, memories, relationship, profile: userProfile })
-  const aiMessages = [{ role: "system" as const, content: systemPrompt }, ...history.slice(-20)]
+  const aiMessages = [{ role: "system" as const, content: systemPrompt }, ...history.slice(-14)]
   const encoder = new TextEncoder()
   let fullContent = ""
   let providerInfo = { model: "", provider: "" }
@@ -141,11 +166,9 @@ export async function POST(request: Request) {
         await supabase.from("nora_messages").insert({ conversation_id: conversationId, role: "assistant", content: trimmedAnswer, metadata: providerInfo })
         await supabase.from("nora_conversations").update({ title, updated_at: new Date().toISOString(), metadata: nextMetadata }).eq("id", conversationId)
 
-        // پاسخ اصلی تمام شده؛ همین حالا کلاینت را آزاد کن.
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", conversationId })}\n\n`))
         controller.close()
 
-        // حافظه و پروفایل نباید زمان پاسخ کاربر را طولانی کنند.
         if (memoryEnabled && memoryAutoSave) {
           void (async () => {
             try {
@@ -157,13 +180,13 @@ export async function POST(request: Request) {
                 const importance = Math.max(1, Math.min(10, Number(memory.importance) || 5))
                 if (importance < memoryMinImportance) continue
                 const duplicate = memories.some((m) => m.content.trim().toLocaleLowerCase("fa") === content.toLocaleLowerCase("fa"))
-                if (!duplicate && content) await supabase.from("nora_memory").insert({ nora_id: instance.id, user_id: ctx.authUser.id, memory_type: memoryType, content, importance, metadata: { source: "conversation", conversation_id: conversationId } })
+                if (!duplicate && content) await supabase.from("nora_memory").insert({ nora_id: instance.id, user_id: ctx!.authUser.id, memory_type: memoryType, content, importance, metadata: { source: "conversation", conversation_id: conversationId } })
               }
 
               const profileDelta = await extractUserProfileDelta(userContent)
               const nextProfile = mergeProfile(userProfile, profileDelta)
               if (nextProfile.updated_at !== userProfile.updated_at) {
-                await supabase.from("nora_users").update({ profile: nextProfile }).eq("id", ctx.authUser.id).eq("nora_id", instance.id)
+                await supabase.from("nora_users").update({ profile: nextProfile }).eq("id", ctx!.authUser.id).eq("nora_id", instance.id)
               }
             } catch (backgroundError) {
               console.error("Nora background memory processing failed", backgroundError)
