@@ -21,7 +21,7 @@ export function getAiProvidersForStreaming(): Provider[] {
   return providers
 }
 
-export async function generateAiResponse(messages: ChatMessage[]) {
+export async function streamAiResponse(messages: ChatMessage[], onChunk: (text: string) => void) {
   const providers = getAiProvidersForStreaming()
   if (!providers.length) throw new Error("AI_PROVIDER_NOT_CONFIGURED")
   let lastError: unknown = null
@@ -30,26 +30,68 @@ export async function generateAiResponse(messages: ChatMessage[]) {
     try {
       const response = await fetch(`${provider.baseUrl.replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}` },
-        body: JSON.stringify({ model: provider.model, messages }),
+        headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}`, accept: "text/event-stream" },
+        body: JSON.stringify({ model: provider.model, messages, stream: true }),
         cache: "no-store",
       })
-      const data = await response.json().catch(() => null)
-      if (!response.ok) {
+
+      if (!response.ok || !response.body) {
+        const data = await response.json().catch(() => null)
         lastError = new Error(`${provider.name} provider returned ${response.status}`)
-        console.error("Nora AI provider error", provider.name, response.status, data)
+        console.error("Nora AI streaming provider error", provider.name, response.status, data)
         continue
       }
-      const content = data?.choices?.[0]?.message?.content
-      if (typeof content !== "string" || !content.trim()) {
-        lastError = new Error(`${provider.name} returned an empty response`)
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ""
+      let fullContent = ""
+
+      const consume = (text: string) => {
+        buffer += text
+        const lines = buffer.split("\n")
+        buffer = lines.pop() || ""
+        for (const rawLine of lines) {
+          const line = rawLine.trim()
+          if (!line.startsWith("data:")) continue
+          const payload = line.slice(5).trim()
+          if (payload === "[DONE]") continue
+          try {
+            const data = JSON.parse(payload)
+            const delta = data?.choices?.[0]?.delta?.content
+            if (typeof delta === "string" && delta) {
+              fullContent += delta
+              onChunk(delta)
+            }
+          } catch {
+            // Ignore incomplete/non-JSON SSE lines.
+          }
+        }
+      }
+
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        consume(decoder.decode(value, { stream: true }))
+      }
+      consume(decoder.decode())
+
+      if (!fullContent.trim()) {
+        lastError = new Error(`${provider.name} returned an empty streaming response`)
         continue
       }
-      return { content: content.trim(), model: provider.model, provider: provider.name }
+      return { content: fullContent.trim(), model: provider.model, provider: provider.name }
     } catch (error) {
       lastError = error
-      console.error("Nora AI provider request failed", provider.name, error)
+      console.error("Nora AI streaming request failed", provider.name, error)
     }
   }
+
   throw lastError || new Error("AI_PROVIDER_FAILED")
+}
+
+export async function generateAiResponse(messages: ChatMessage[]) {
+  let result: Awaited<ReturnType<typeof streamAiResponse>> | null = null
+  result = await streamAiResponse(messages, () => {})
+  return result
 }
