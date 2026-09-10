@@ -35,7 +35,7 @@ export async function streamAiResponse(messages: ChatMessage[], onChunk: (text: 
           model: provider.model,
           messages,
           stream: true,
-          max_tokens: 450,
+          max_tokens: 250,
         }),
         cache: "no-store",
       })
