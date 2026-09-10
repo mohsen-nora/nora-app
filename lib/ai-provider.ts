@@ -31,7 +31,7 @@ export async function generateAiResponse(messages: ChatMessage[]) {
       const response = await fetch(`${provider.baseUrl.replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}` },
-        body: JSON.stringify({ model: provider.model, messages, temperature: 0.7 }),
+        body: JSON.stringify({ model: provider.model, messages }),
       })
       const data = await response.json().catch(() => null)
       if (!response.ok) {
