@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { getSessionContext } from "@/lib/authz"
 import { createClient } from "@/lib/supabase/server"
 import { streamAiResponse } from "@/lib/ai-provider"
-import { advanceRelationship, buildNoraSystemPrompt, normalizeRelationship, extractMemories } from "@/lib/nora-core"
+import { advanceRelationship, buildNoraSystemPrompt, normalizeRelationship, normalizeUserProfile, DEFAULT_USER_PROFILE, extractMemories, extractUserProfileDelta } from "@/lib/nora-core"
 import type { NoraMemory } from "@/lib/types"
 
 export const dynamic = "force-dynamic"
@@ -20,6 +20,30 @@ async function getNoraContext(supabase: Awaited<ReturnType<typeof createClient>>
     for (const token of query) if (contentTokens.has(token)) overlap += 1
     return { memory, score: overlap * 4 + Number(memory.importance || 5) * 0.5 }
   }).sort((a, b) => b.score - a.score).slice(0, maxItems).map(({ memory }) => memory) as NoraMemory[]
+}
+
+function mergeProfile(current: unknown, delta: unknown) {
+  const base = normalizeUserProfile(current || DEFAULT_USER_PROFILE)
+  const input = (delta && typeof delta === "object" ? delta : {}) as Record<string, unknown>
+  const list = (key: keyof typeof base) => Array.isArray(input[key]) ? input[key].filter((v): v is string => typeof v === "string" && v.trim()).map((v) => v.trim()).slice(0, 3) : []
+  const mergedList = (existing: string[], incoming: string[]) => Array.from(new Set([...existing, ...incoming])).slice(-30)
+  const communication = ["short", "detailed", "mixed"].includes(String(input.communication_style)) ? String(input.communication_style) as typeof base.communication_style : base.communication_style
+  const tone = ["warm", "direct", "formal", "casual", "mixed"].includes(String(input.tone_preference)) ? String(input.tone_preference) as typeof base.tone_preference : base.tone_preference
+  const decision = ["fast", "analytical", "balanced"].includes(String(input.decision_style)) ? String(input.decision_style) as typeof base.decision_style : base.decision_style
+  const incomingCount = ["interests", "goals", "ongoing_projects", "preferences", "dislikes"].reduce((n, key) => n + list(key as keyof typeof base).length, 0)
+  return {
+    ...base,
+    ...(communication ? { communication_style: communication } : {}),
+    ...(tone ? { tone_preference: tone } : {}),
+    ...(decision ? { decision_style: decision } : {}),
+    interests: mergedList(base.interests, list("interests")),
+    goals: mergedList(base.goals, list("goals")),
+    ongoing_projects: mergedList(base.ongoing_projects, list("ongoing_projects")),
+    preferences: mergedList(base.preferences, list("preferences")),
+    dislikes: mergedList(base.dislikes, list("dislikes")),
+    confidence: Math.min(100, base.confidence + Math.min(8, incomingCount * 2)),
+    updated_at: new Date().toISOString(),
+  }
 }
 
 export async function GET() {
@@ -58,6 +82,9 @@ export async function POST(request: Request) {
   const memoryAutoSave = settings.memory_auto_save !== false
   const memoryMinImportance = Math.max(1, Math.min(10, Number(settings.memory_min_importance) || 6))
 
+  const { data: userRow } = await supabase.from("nora_users").select("profile").eq("id", ctx.authUser.id).eq("nora_id", instance.id).maybeSingle()
+  const userProfile = normalizeUserProfile(userRow?.profile || DEFAULT_USER_PROFILE)
+
   const { data: existing } = await supabase.from("nora_conversations").select("id,title,metadata").eq("nora_id", instance.id).eq("user_id", ctx.authUser.id).order("updated_at", { ascending: false }).limit(1).maybeSingle()
   let conversationId: string
   let title: string
@@ -89,7 +116,7 @@ export async function POST(request: Request) {
 
   const memories = memoryEnabled ? await getNoraContext(supabase, instance.id, ctx.authUser.id, userContent) : []
   const relationship = normalizeRelationship(conversationMetadata.relationship)
-  const systemPrompt = buildNoraSystemPrompt({ name: instance.name, systemPrompt: instance.system_prompt, personality: instance.personality, memories, relationship })
+  const systemPrompt = buildNoraSystemPrompt({ name: instance.name, systemPrompt: instance.system_prompt, personality: instance.personality, memories, relationship, profile: userProfile })
   const aiMessages = [{ role: "system" as const, content: systemPrompt }, ...history.slice(-20)]
   const encoder = new TextEncoder()
   let fullContent = ""
@@ -112,13 +139,23 @@ export async function POST(request: Request) {
           const extracted = await extractMemories(userContent, fullContent.trim())
           for (const memory of extracted) {
             const content = String(memory.content).trim().slice(0, 1000)
-            const memoryType = String(memory.type || "fact").slice(0, 50)
+            const allowedTypes = new Set(["fact", "preference", "goal", "relationship", "project", "important"])
+            const memoryType = allowedTypes.has(String(memory.type)) ? String(memory.type) : "fact"
             const importance = Math.max(1, Math.min(10, Number(memory.importance) || 5))
             if (importance < memoryMinImportance) continue
-            const duplicate = memories.some((m) => m.content.trim().toLowerCase() === content.toLowerCase())
+            const duplicate = memories.some((m) => m.content.trim().toLocaleLowerCase("fa") === content.toLocaleLowerCase("fa"))
             if (!duplicate && content) await supabase.from("nora_memory").insert({ nora_id: instance.id, user_id: ctx.authUser.id, memory_type: memoryType, content, importance, metadata: { source: "conversation", conversation_id: conversationId } })
           }
         }
+
+        if (memoryEnabled && memoryAutoSave) {
+          const profileDelta = await extractUserProfileDelta(userContent)
+          const nextProfile = mergeProfile(userProfile, profileDelta)
+          if (nextProfile.updated_at !== userProfile.updated_at || nextProfile.confidence !== userProfile.confidence) {
+            await supabase.from("nora_users").update({ profile: nextProfile }).eq("id", ctx.authUser.id).eq("nora_id", instance.id)
+          }
+        }
+
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done", conversationId })}\n\n`))
         controller.close()
       } catch (error) {
