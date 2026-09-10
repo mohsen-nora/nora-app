@@ -1,4 +1,3 @@
-import { Suspense } from "react"
 import { AuthForm } from "@/components/auth-form"
 import { BrandLockup } from "@/components/brand"
 
@@ -14,9 +13,7 @@ export default function SignUpPage() {
           <p className="mb-6 text-sm text-muted-foreground text-pretty">
             برای شروع گفتگو با نورا یک حساب بسازید.
           </p>
-          <Suspense fallback={<div className="h-64" />}>
-            <AuthForm mode="sign-up" />
-          </Suspense>
+          <AuthForm mode="sign-up" />
         </div>
       </div>
     </main>
