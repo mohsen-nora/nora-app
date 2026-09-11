@@ -24,6 +24,24 @@ export function getAiProvidersForStreaming(): Provider[] {
 const REQUEST_TIMEOUT_MS = 25000
 const MAX_ATTEMPTS = 2
 
+async function nonStreamingFallback(provider: Provider, messages: ChatMessage[], signal: AbortSignal) {
+  const response = await fetch(`${provider.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}`, accept: "application/json" },
+    body: JSON.stringify({ model: provider.model, messages, stream: false, max_tokens: 250 }),
+    cache: "no-store",
+    signal,
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    throw new Error(`${provider.name} non-stream provider returned ${response.status}${data?.error?.message ? `: ${data.error.message}` : ""}`)
+  }
+  const data = await response.json().catch(() => null)
+  const content = data?.choices?.[0]?.message?.content
+  if (typeof content !== "string" || !content.trim()) throw new Error(`${provider.name} returned an empty non-streaming response`)
+  return content.trim()
+}
+
 export async function streamAiResponse(messages: ChatMessage[], onChunk: (text: string) => void) {
   const providers = getAiProvidersForStreaming()
   if (!providers.length) throw new Error("AI_PROVIDER_NOT_CONFIGURED")
@@ -45,7 +63,7 @@ export async function streamAiResponse(messages: ChatMessage[], onChunk: (text: 
 
         if (!response.ok || !response.body) {
           const data = await response.json().catch(() => null)
-          lastError = new Error(`${provider.name} provider returned ${response.status}`)
+          lastError = new Error(`${provider.name} provider returned ${response.status}${data?.error?.message ? `: ${data.error.message}` : ""}`)
           console.error("Nora AI streaming provider error", provider.name, response.status, data)
           const retryable = response.status === 408 || response.status === 409 || response.status === 429 || response.status >= 500
           if (retryable && attempt < MAX_ATTEMPTS) continue
@@ -88,9 +106,18 @@ export async function streamAiResponse(messages: ChatMessage[], onChunk: (text: 
         consume(decoder.decode())
 
         if (!fullContent.trim()) {
-          lastError = new Error(`${provider.name} returned an empty streaming response`)
-          if (attempt < MAX_ATTEMPTS && !emitted) continue
-          break
+          // Some OpenAI-compatible gateways can complete the request but return an empty
+          // SSE body. Recover with the same provider using the standard JSON response.
+          try {
+            const recovered = await nonStreamingFallback(provider, messages, abortController.signal)
+            onChunk(recovered)
+            return { content: recovered, model: provider.model, provider: provider.name }
+          } catch (fallbackError) {
+            lastError = fallbackError
+            console.error("Nora AI non-stream fallback failed", provider.name, fallbackError)
+            if (attempt < MAX_ATTEMPTS && !emitted) continue
+            break
+          }
         }
 
         return { content: fullContent.trim(), model: provider.model, provider: provider.name }
