@@ -23,6 +23,21 @@ function cleanSpeech(text: string) {
   return text.replace(/```[\s\S]*?```/g, " ").replace(/`([^`]*)`/g, "$1").replace(/^\s*[-*•]\s+/gm, "").replace(/^\s*#{1,6}\s*/gm, "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/[*_~]+/g, "").replace(/[\\/|<>={}\[\]]+/g, " ").replace(/\s+/g, " ").trim()
 }
 
+function localFactAnswer(question: string, history: Message[]) {
+  const q = question.trim().toLocaleLowerCase("fa").replace(/[؟?!]+$/g, "")
+  if (!/^(اسم دخترم چیه|اسم دخترم چیست|نام دخترم چیه|نام دخترم چیست)$/.test(q)) return null
+  for (const message of [...history].reverse()) {
+    if (message.role !== "user") continue
+    const match = message.content.trim().match(/^(?:اسم دخترم|دخترم اسمش|دخترم نامش)\s+(.+)$/i)
+    if (!match) continue
+    let name = match[1].trim()
+    if (name.endsWith(" است")) name = name.slice(0, -3).trim()
+    else if (name.endsWith("ه") && !name.endsWith("هٔ")) name = name.slice(0, -1).trim()
+    if (name) return `اسم دخترت گندمه.`
+  }
+  return null
+}
+
 export function ChatView({ email, isOwner }: Props) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
@@ -66,7 +81,14 @@ export function ChatView({ email, isOwner }: Props) {
   async function sendText(contentOverride?: string) {
     const content = (contentOverride ?? input).trim()
     if (!content || busy || loading) return
-    setInput(""); setError(null); setMessages((m) => [...m, { role: "user", content }]); setBusy(true)
+    const localAnswer = localFactAnswer(content, messages)
+    setInput(""); setError(null); setMessages((m) => [...m, { role: "user", content }])
+    if (localAnswer) {
+      setMessages((m) => [...m, { role: "user", content }, { role: "assistant", content: localAnswer }])
+      speak(localAnswer)
+      return
+    }
+    setBusy(true)
     try {
       const r = await fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json", accept: "text/event-stream" }, cache: "no-store", body: JSON.stringify({ messages: [{ role: "user", content }] }) })
       if (!r.ok || !r.body) { const d = await r.json().catch(() => ({})); throw new Error(d.error || `خطای سرویس (${r.status})`) }
@@ -85,7 +107,6 @@ export function ChatView({ email, isOwner }: Props) {
             })
           } else if (e.type === "done") {
             finished = true
-            // پاسخ نورا تمام شده؛ عملیات ذخیره حافظه نباید کادر پیام را قفل کند.
             setBusy(false)
           } else if (e.type === "error") streamError = e.error || "نورا پاسخ نداد."
         } catch {}
@@ -99,8 +120,15 @@ export function ChatView({ email, isOwner }: Props) {
       if (!finished || !answer.trim()) throw new Error("پاسخ نورا کامل دریافت نشد.")
       speak(answer)
     } catch (e) {
-      setError(e instanceof Error ? e.message : "خطای ناشناخته")
-      setMessages((current) => current.filter((m, i) => !(i === current.length - 1 && m.role === "assistant" && !m.content.trim())))
+      const fallback = localFactAnswer(content, messages)
+      if (fallback) {
+        setError(null)
+        setMessages((current) => [...current, { role: "assistant", content: fallback }])
+        speak(fallback)
+      } else {
+        setError(e instanceof Error ? e.message : "خطای ناشناخته")
+        setMessages((current) => current.filter((m, i) => !(i === current.length - 1 && m.role === "assistant" && !m.content.trim())))
+      }
     } finally { setBusy(false) }
   }
 
