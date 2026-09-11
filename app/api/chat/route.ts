@@ -11,6 +11,43 @@ function memoryTokens(text: string) {
   return new Set(text.toLocaleLowerCase("fa").replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).map((token) => token.trim()).filter((token) => token.length >= 3))
 }
 
+function explicitFacts(text: string) {
+  const facts: Array<{ content: string; importance: number }> = []
+  const clean = text.trim().replace(/[.!؟?]+$/g, "")
+  const add = (content: string, importance = 9) => {
+    const value = content.trim().replace(/^[«\"]|[»\"]$/g, "")
+    if (value.length > 1 && value.length < 120 && !facts.some((f) => f.content === value)) facts.push({ content: value, importance })
+  }
+
+  const userName = clean.match(/^(?:اسمم|اسم من|من)\s+(.+?)\s*(?:است|ه|هستم)$/i)
+  if (userName) add(`نام کاربر: ${userName[1].trim()}`, 10)
+
+  const daughter = clean.match(/^(?:اسم دخترم|دخترم اسمش|دخترم نامش)\s+(.+)$/i)
+  if (daughter) {
+    let name = daughter[1].trim()
+    if (name.endsWith(" است")) name = name.slice(0, -3).trim()
+    else if (name.endsWith("ه") && !name.endsWith("هٔ")) name = name.slice(0, -1).trim()
+    add(`نام دختر کاربر: ${name}`, 10)
+  }
+
+  const son = clean.match(/^(?:اسم پسرم|پسرم اسمش|پسرم نامش)\s+(.+)$/i)
+  if (son) {
+    let name = son[1].trim()
+    if (name.endsWith(" است")) name = name.slice(0, -3).trim()
+    else if (name.endsWith("ه") && !name.endsWith("هٔ")) name = name.slice(0, -1).trim()
+    add(`نام پسر کاربر: ${name}`, 10)
+  }
+
+  const spouse = clean.match(/^(?:اسم همسرم|همسرم اسمش|همسرم نامش)\s+(.+)$/i)
+  if (spouse) {
+    let name = spouse[1].trim()
+    if (name.endsWith(" است")) name = name.slice(0, -3).trim()
+    else if (name.endsWith("ه") && !name.endsWith("هٔ")) name = name.slice(0, -1).trim()
+    add(`نام همسر کاربر: ${name}`, 10)
+  }
+  return facts
+}
+
 async function getNoraContext(supabase: Awaited<ReturnType<typeof createClient>>, noraId: string, userId: string, currentMessage: string, maxItems = 12) {
   const { data: memories } = await supabase.from("nora_memory").select("*").eq("nora_id", noraId).eq("user_id", userId).order("importance", { ascending: false }).order("updated_at", { ascending: false }).limit(100)
   const query = memoryTokens(currentMessage)
@@ -86,7 +123,6 @@ export async function POST(request: Request) {
   const memoryMinImportance = Math.max(1, Math.min(10, Number(settings.memory_min_importance) || 6))
   const memoryMaxItems = Math.max(1, Math.min(30, Number(settings.memory_max_items) || 12))
 
-  // خواندن پروفایل و آخرین گفتگو مستقل‌اند؛ موازی اجرا می‌شوند تا زمان شروع پاسخ کم شود.
   const [{ data: userRow }, { data: existing }] = await Promise.all([
     supabase.from("nora_users").select("profile").eq("id", ctx.authUser.id).eq("nora_id", instance.id).maybeSingle(),
     supabase.from("nora_conversations").select("id,title,metadata").eq("nora_id", instance.id).eq("user_id", ctx.authUser.id).order("updated_at", { ascending: false }).limit(1).maybeSingle(),
@@ -144,8 +180,21 @@ async function buildChatResponse({ ctx, supabase, instance, memoryEnabled, memor
     history.push({ role: "user", content: userContent })
   }
 
+  if (memoryEnabled && memoryAutoSave) {
+    const facts = explicitFacts(userContent)
+    for (const fact of facts) {
+      const duplicate = memories.some((m) => m.content.trim().toLocaleLowerCase("fa") === fact.content.toLocaleLowerCase("fa"))
+      if (duplicate) continue
+      const { data: inserted } = await supabase.from("nora_memory").insert({ nora_id: instance.id, user_id: ctx.authUser.id, memory_type: "fact", content: fact.content, importance: fact.importance, metadata: { source: "explicit_user_statement", conversation_id: conversationId } }).select("*").maybeSingle()
+      if (inserted) memories.unshift(inserted as NoraMemory)
+    }
+  }
+
   const relationship = normalizeRelationship(conversationMetadata.relationship)
-  const systemPrompt = buildNoraSystemPrompt({ name: instance.name, systemPrompt: instance.system_prompt, personality: instance.personality, memories, relationship, profile: userProfile })
+  let systemPrompt = buildNoraSystemPrompt({ name: instance.name, systemPrompt: instance.system_prompt, personality: instance.personality, memories, relationship, profile: userProfile })
+  const canonicalName = userProfile as ReturnType<typeof normalizeUserProfile> & { user_name?: string }
+  const knownUserName = canonicalName.user_name || memories.find((m) => /^نام کاربر:/.test(m.content))?.content.replace(/^نام کاربر:\s*/, "")
+  systemPrompt += `\n\nقانون هویت قطعی:\n- تو نورا هستی؛ نورا نام دستیار است، نه نام کاربر.\n${knownUserName ? `- نام کاربر: ${knownUserName}` : "- اگر نام کاربر در حافظه ثبت شده است، همان نام را برای کاربر به کار ببر."}\n- این دو هویت را هرگز با هم جابه‌جا نکن.\n- وقتی کاربر یک واقعیت صریح مثل نام خودش یا نام یکی از اعضای خانواده را می‌گوید، آن را به عنوان واقعیت قطعی همان پیام در نظر بگیر و برای تأیید دوباره سؤال نکن.`
   const aiMessages = [{ role: "system" as const, content: systemPrompt }, ...history.slice(-14)]
   const encoder = new TextEncoder()
   let fullContent = ""
