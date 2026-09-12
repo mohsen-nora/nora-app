@@ -24,22 +24,38 @@ export function getAiProvidersForStreaming(): Provider[] {
 const REQUEST_TIMEOUT_MS = 25000
 const MAX_ATTEMPTS = 2
 
+function completionLimit(model: string) {
+  return /^gpt-5(?:-|$)/i.test(model) ? { max_completion_tokens: 250 } : { max_tokens: 250 }
+}
+
+function extractContent(data: any) {
+  const content = data?.choices?.[0]?.message?.content
+  if (typeof content === "string" && content.trim()) return content.trim()
+  if (Array.isArray(content)) {
+    const text = content.map((item: any) => typeof item === "string" ? item : item?.text).filter((item: unknown): item is string => typeof item === "string").join("").trim()
+    if (text) return text
+  }
+  const alternatives = [data?.choices?.[0]?.text, data?.choices?.[0]?.message?.reasoning_content, data?.output_text]
+  return alternatives.find((value: unknown) => typeof value === "string" && value.trim())?.trim() || ""
+}
+
 async function nonStreamingFallback(provider: Provider, messages: ChatMessage[], signal: AbortSignal) {
   const response = await fetch(`${provider.baseUrl.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}`, accept: "application/json" },
-    body: JSON.stringify({ model: provider.model, messages, stream: false, max_tokens: 250 }),
+    body: JSON.stringify({ model: provider.model, messages, stream: false, ...completionLimit(provider.model) }),
     cache: "no-store",
     signal,
   })
+  const raw = await response.text()
+  let data: any = null
+  try { data = raw ? JSON.parse(raw) : null } catch {}
   if (!response.ok) {
-    const data = await response.json().catch(() => null)
-    throw new Error(`${provider.name} non-stream provider returned ${response.status}${data?.error?.message ? `: ${data.error.message}` : ""}`)
+    throw new Error(`${provider.name} non-stream provider returned ${response.status}${data?.error?.message ? `: ${data.error.message}` : raw ? `: ${raw.slice(0, 300)}` : ""}`)
   }
-  const data = await response.json().catch(() => null)
-  const content = data?.choices?.[0]?.message?.content
-  if (typeof content !== "string" || !content.trim()) throw new Error(`${provider.name} returned an empty non-streaming response`)
-  return content.trim()
+  const content = extractContent(data)
+  if (!content) throw new Error(`${provider.name} returned an empty non-streaming response`)
+  return content
 }
 
 export async function streamAiResponse(messages: ChatMessage[], onChunk: (text: string) => void) {
@@ -56,15 +72,17 @@ export async function streamAiResponse(messages: ChatMessage[], onChunk: (text: 
         const response = await fetch(`${provider.baseUrl.replace(/\/$/, "")}/chat/completions`, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${provider.apiKey}`, accept: "text/event-stream" },
-          body: JSON.stringify({ model: provider.model, messages, stream: true, max_tokens: 250 }),
+          body: JSON.stringify({ model: provider.model, messages, stream: true, ...completionLimit(provider.model) }),
           cache: "no-store",
           signal: abortController.signal,
         })
 
         if (!response.ok || !response.body) {
-          const data = await response.json().catch(() => null)
-          lastError = new Error(`${provider.name} provider returned ${response.status}${data?.error?.message ? `: ${data.error.message}` : ""}`)
-          console.error("Nora AI streaming provider error", provider.name, response.status, data)
+          const raw = await response.text().catch(() => "")
+          let data: any = null
+          try { data = raw ? JSON.parse(raw) : null } catch {}
+          lastError = new Error(`${provider.name} provider returned ${response.status}${data?.error?.message ? `: ${data.error.message}` : raw ? `: ${raw.slice(0, 300)}` : ""}`)
+          console.error("Nora AI streaming provider error", provider.name, response.status, data || raw)
           const retryable = response.status === 408 || response.status === 409 || response.status === 429 || response.status >= 500
           if (retryable && attempt < MAX_ATTEMPTS) continue
           break
@@ -106,8 +124,6 @@ export async function streamAiResponse(messages: ChatMessage[], onChunk: (text: 
         consume(decoder.decode())
 
         if (!fullContent.trim()) {
-          // Some OpenAI-compatible gateways can complete the request but return an empty
-          // SSE body. Recover with the same provider using the standard JSON response.
           try {
             const recovered = await nonStreamingFallback(provider, messages, abortController.signal)
             onChunk(recovered)
