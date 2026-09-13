@@ -16,16 +16,18 @@ export function getAiProvidersForStreaming(): Provider[] {
 
   const fallbackKey = process.env.AI_FALLBACK_API_KEY
   const fallbackBaseUrl = process.env.AI_FALLBACK_BASE_URL
-  const fallbackModel = process.env.AI_FALLBACK_MODEL || primaryModel
+  const fallbackModel = process.env.AI_FALLBACK_MODEL || "gpt-4o-mini"
   if (fallbackKey && fallbackBaseUrl) providers.push({ name: "fallback", apiKey: fallbackKey, baseUrl: fallbackBaseUrl, model: fallbackModel })
   return providers
 }
 
-const REQUEST_TIMEOUT_MS = 25000
+const REQUEST_TIMEOUT_MS = 30000
 const MAX_ATTEMPTS = 2
 
 function completionLimit(model: string) {
-  return /^gpt-5(?:-|$)/i.test(model) ? { max_completion_tokens: 250 } : { max_tokens: 250 }
+  // GPT-5 reasoning models can consume completion budget before emitting visible text.
+  // A very small budget (e.g. 250) can therefore produce a valid response with no text.
+  return /^gpt-5(?:-|$)/i.test(model) ? { max_completion_tokens: 1000 } : { max_tokens: 500 }
 }
 
 function extractContent(data: any) {
@@ -35,7 +37,12 @@ function extractContent(data: any) {
     const text = content.map((item: any) => typeof item === "string" ? item : item?.text).filter((item: unknown): item is string => typeof item === "string").join("").trim()
     if (text) return text
   }
-  const alternatives = [data?.choices?.[0]?.text, data?.choices?.[0]?.message?.reasoning_content, data?.output_text]
+  const alternatives = [
+    data?.choices?.[0]?.text,
+    data?.choices?.[0]?.message?.reasoning_content,
+    data?.output_text,
+    data?.output?.[0]?.content?.[0]?.text,
+  ]
   return alternatives.find((value: unknown) => typeof value === "string" && value.trim())?.trim() || ""
 }
 
@@ -54,7 +61,11 @@ async function nonStreamingFallback(provider: Provider, messages: ChatMessage[],
     throw new Error(`${provider.name} non-stream provider returned ${response.status}${data?.error?.message ? `: ${data.error.message}` : raw ? `: ${raw.slice(0, 300)}` : ""}`)
   }
   const content = extractContent(data)
-  if (!content) throw new Error(`${provider.name} returned an empty non-streaming response`)
+  if (!content) {
+    const finishReason = data?.choices?.[0]?.finish_reason
+    const usage = data?.usage
+    throw new Error(`${provider.name} returned an empty non-streaming response${finishReason ? ` (finish_reason=${finishReason})` : ""}${usage ? ` usage=${JSON.stringify(usage)}` : ""}`)
+  }
   return content
 }
 
